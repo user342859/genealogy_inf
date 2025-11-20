@@ -1869,12 +1869,41 @@ with tab_profiles:
                         col for col in column_order if col in results.columns
                     ]
                     display_df = results[display_columns].rename(columns=rename_map)
+                    
+                    st.markdown("---")
+                    
+                    # Создаем колонки для аккуратного отображения поля ввода
+                    f_col1, f_col2 = st.columns([0.6, 0.4])
+                    with f_col1:
+                        search_query = st.text_input(
+                            "🔍 Фильтр по таблице",
+                            placeholder="Введите автора, год или часть названия...",
+                            help="При вводе текста строки, в которых он не найден, будут скрыты.",
+                            key="profile_result_filter"
+                        )
+                    
+                    # Если введен текст, фильтруем DataFrame
+                    if search_query:
+                        # Приводим всё к строке, ищем вхождение без учета регистра
+                        mask = display_df.astype(str).apply(
+                            lambda x: x.str.contains(search_query, case=False, na=False)
+                        ).any(axis=1)
+                        filtered_df = display_df[mask]
+                    else:
+                        filtered_df = display_df
 
-                    st.success(f"Найдено диссертаций: {len(display_df)}")
-                    st.dataframe(display_df, use_container_width=True)
+                    # Обновляем счетчик и показываем таблицу
+                    if len(filtered_df) != len(display_df):
+                        st.success(f"Найдено всего: {len(display_df)}. После фильтрации: {len(filtered_df)}")
+                    else:
+                        st.success(f"Найдено диссертаций: {len(display_df)}")
+                    
+                    st.dataframe(filtered_df, use_container_width=True)
 
                     selection_slug = slug("_".join(selected_codes)) or "profiles"
-                    csv_bytes = display_df.to_csv(
+                    
+                    # Скачиваем то, что видит пользователь (отфильтрованное)
+                    csv_bytes = filtered_df.to_csv(
                         index=False, encoding="utf-8-sig"
                     ).encode("utf-8-sig")
                     st.download_button(
