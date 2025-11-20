@@ -1744,17 +1744,27 @@ with tab_profiles:
             "Добавьте от одного до пяти пунктов классификатора, чтобы сформировать подборку."
         )
 
-    run_search = st.button(
+    # Кнопка запуска поиска
+    run_search_click = st.button(
         "Найти диссертации",
         type="primary",
         disabled=not selected_codes,
         key="profile_run_search",
     )
 
-    if run_search and selected_codes:
+    # Логика сохранения состояния: если нажали кнопку, запоминаем это
+    if run_search_click:
+        st.session_state["profile_search_active"] = True
+
+    # Если пользователь очистил коды, сбрасываем состояние поиска
+    if not selected_codes:
+        st.session_state["profile_search_active"] = False
+
+    # Условие отображения: проверяем не кнопку, а сохраненное состояние
+    if st.session_state.get("profile_search_active") and selected_codes:
         try:
             scores_df = load_basic_scores()
-        except Exception as exc:  # pragma: no cover - защита от I/O ошибок
+        except Exception as exc:
             st.error(f"Не удалось загрузить тематические профили: {exc}")
             scores_df = None
 
@@ -1869,22 +1879,20 @@ with tab_profiles:
                         col for col in column_order if col in results.columns
                     ]
                     display_df = results[display_columns].rename(columns=rename_map)
-                    
+
+                    # --- БЛОК ФИЛЬТРАЦИИ ---
                     st.markdown("---")
                     
-                    # Создаем колонки для аккуратного отображения поля ввода
                     f_col1, f_col2 = st.columns([0.6, 0.4])
                     with f_col1:
                         search_query = st.text_input(
                             "🔍 Фильтр по таблице",
                             placeholder="Введите автора, год или часть названия...",
-                            help="При вводе текста строки, в которых он не найден, будут скрыты.",
+                            help="Строки, не содержащие введенный текст, будут скрыты.",
                             key="profile_result_filter"
                         )
                     
-                    # Если введен текст, фильтруем DataFrame
                     if search_query:
-                        # Приводим всё к строке, ищем вхождение без учета регистра
                         mask = display_df.astype(str).apply(
                             lambda x: x.str.contains(search_query, case=False, na=False)
                         ).any(axis=1)
@@ -1892,7 +1900,6 @@ with tab_profiles:
                     else:
                         filtered_df = display_df
 
-                    # Обновляем счетчик и показываем таблицу
                     if len(filtered_df) != len(display_df):
                         st.success(f"Найдено всего: {len(display_df)}. После фильтрации: {len(filtered_df)}")
                     else:
@@ -1902,10 +1909,10 @@ with tab_profiles:
 
                     selection_slug = slug("_".join(selected_codes)) or "profiles"
                     
-                    # Скачиваем то, что видит пользователь (отфильтрованное)
                     csv_bytes = filtered_df.to_csv(
                         index=False, encoding="utf-8-sig"
                     ).encode("utf-8-sig")
+                    
                     st.download_button(
                         "Скачать результаты (CSV)",
                         data=csv_bytes,
@@ -1913,4 +1920,3 @@ with tab_profiles:
                         mime="text/csv",
                         key="profile_download_csv",
                     )
-
