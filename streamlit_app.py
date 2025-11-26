@@ -48,7 +48,7 @@ FEEDBACK_FORM_RESULT_KEY = "feedback_form_result"
 # PUBLIC_APP_URL.
 PUBLIC_APP_URL = os.environ.get(
     "PUBLIC_APP_URL",
-    "https://lineages-trceuocpnvyaxysnpis72f.streamlit.app/",
+    "https://academic-genealogy.streamlit.app/",
 ).strip().rstrip("/")
 
 # ---------------------- Тематический классификатор ------------------------
