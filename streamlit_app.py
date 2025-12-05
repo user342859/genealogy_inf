@@ -1395,8 +1395,9 @@ with tab_lineages:
         st.info(
             "Выберите или добавьте имена руководителей и нажмите ‘Построить деревья’."
         )
-"""
-with tab_silhouette:
+
+#with tab_silhouette:
+    """
     st.subheader("Сравнение научных школ по тематическим профилям")
     st.write(
         "Введите двух научных руководителей, чтобы сравнить тематические профили их "
@@ -1705,7 +1706,7 @@ with tab_silhouette:
                                 mime="image/png",
                                 key="silhouette_download_plot",
                             )
-"""
+    """
 
 with tab_dissertations:
     st.subheader("Поиск информации о диссертациях")
