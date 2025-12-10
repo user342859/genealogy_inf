@@ -1319,13 +1319,8 @@ with tab_lineages:
                             key=f"html_{file_prefix}",
                         )
                     with c3:
-                        st.download_button(
-                            "Скачать выборку CSV",
-                            data=csv_bytes,
-                            file_name=f"{file_prefix}.sampling.csv",
-                            mime="text/csv",
-                            key=f"csv_{file_prefix}",
-                        )
+                        if st.button("📥 Таблица данных", key=f"data_{file_prefix}"):
+                            download_data_dialog(subset, f"{file_prefix}.sampling", f"tree_{file_prefix}")
                     with c4:
                         if md_bytes is not None:
                             st.download_button(
@@ -1548,42 +1543,9 @@ with tab_dissertations:
                 display_df = result_df[display_columns].rename(columns=rename_map)
                 st.dataframe(display_df, use_container_width=True)
                 
-                # Диалог выбора формата скачивания
-                @st.dialog("Выберите формат файла")
-                def show_download_dialog():
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        if openpyxl:
-                            xlsx_buffer = io.BytesIO()
-                            with pd.ExcelWriter(xlsx_buffer, engine='openpyxl') as writer:
-                                result_df[display_columns].to_excel(writer, index=False, sheet_name='Диссертации')
-                            xlsx_bytes = xlsx_buffer.getvalue()
-                            
-                            st.download_button(
-                                label="📊 Скачать XLSX",
-                                data=xlsx_bytes,
-                                file_name="dissertations_search.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                key="diss_download_xlsx",
-                                use_container_width=True
-                            )
-                        else:
-                            st.info("Установите openpyxl для экспорта в XLSX")
-                    
-                    with col2:
-                        csv_bytes = result_df[display_columns].to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-                        st.download_button(
-                            label="📄 Скачать CSV",
-                            data=csv_bytes,
-                            file_name="dissertations_search.csv",
-                            mime="text/csv",
-                            key="diss_download_csv",
-                            use_container_width=True
-                        )
-                
-                if st.button("Скачать результаты", key="diss_show_download"):
-                    show_download_dialog()
+                # Загрузка результатов — единый диалог выбора формата
+                if st.button("📥 Скачать результаты", key="diss_show_download"):
+                    download_data_dialog(result_df[display_columns], "dissertations_search", "diss")
 
 with tab_profiles:
     st.subheader("Поиск диссертаций по тематическим профилям")
@@ -1835,15 +1797,5 @@ with tab_profiles:
                     st.dataframe(filtered_df, use_container_width=True)
 
                     selection_slug = slug("_".join(selected_codes)) or "profiles"
-                    
-                    csv_bytes = filtered_df.to_csv(
-                        index=False, encoding="utf-8-sig"
-                    ).encode("utf-8-sig")
-                    
-                    st.download_button(
-                        "Скачать результаты (CSV)",
-                        data=csv_bytes,
-                        file_name=f"profiles_{selection_slug}.csv",
-                        mime="text/csv",
-                        key="profile_download_csv",
-                    )
+                    if st.button("📥 Скачать результаты", key="profile_show_download"):
+                        download_data_dialog(filtered_df, f"profiles_{selection_slug}", "profile")
