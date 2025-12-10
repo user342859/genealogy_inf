@@ -1506,6 +1506,13 @@ with tab_dissertations:
                             mask |= result_df[col].astype(str).str.contains(value, case=False, na=False)
                     result_df = result_df[mask]
             
+            # Сохраняем результаты в session_state
+            st.session_state["diss_search_result"] = result_df
+        
+        # Показываем результаты, если они есть в session_state
+        if "diss_search_result" in st.session_state:
+            result_df = st.session_state["diss_search_result"]
+            
             if result_df.empty:
                 st.warning("По заданным критериям ничего не найдено.")
             else:
@@ -1543,9 +1550,10 @@ with tab_dissertations:
                 display_df = result_df[display_columns].rename(columns=rename_map)
                 st.dataframe(display_df, use_container_width=True)
                 
-                # Загрузка результатов — единый диалог выбора формата
+                # Кнопка скачивания — данные теперь доступны из session_state
                 if st.button("📥 Скачать результаты", key="diss_show_download"):
                     download_data_dialog(result_df[display_columns], "dissertations_search", "diss")
+
 
 with tab_profiles:
     st.subheader("Поиск диссертаций по тематическим профилям")
