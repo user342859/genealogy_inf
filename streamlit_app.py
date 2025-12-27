@@ -1274,7 +1274,8 @@ shared_roots = st.query_params.get_all("root")
 valid_shared_roots = [r for r in shared_roots if r in all_supervisor_names]
 manual_prefill = "\n".join(r for r in shared_roots if r not in all_supervisor_names)
 
-tab_lineages, tab_dissertations, tab_profiles, tab_schoolcomparison = st.tabs(
+#tab_lineages, tab_dissertations, tab_profiles, tab_schoolcomparison = st.tabs(
+tab_lineages, tab_dissertations, tab_profiles = st.tabs(
     [
         "Построение деревьев",
         "Поиск информации о диссертациях",
