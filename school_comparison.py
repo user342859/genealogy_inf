@@ -21,10 +21,10 @@ from sklearn.metrics.pairwise import euclidean_distances, cosine_distances
 # ==============================================================================
 
 DistanceMetric = Literal[
-    "euclidean_orthogonal",      # Евклидово в прямоугольном базисе
-    "cosine_orthogonal",         # Косинусное в прямоугольном базисе
-    "euclidean_oblique",         # Евклидово в косоугольном базисе
-    "cosine_oblique"             # Косинусное в косоугольном базисе
+    "euclidean_orthogonal",
+    "cosine_orthogonal",
+    "euclidean_oblique",
+    "cosine_oblique"
 ]
 
 ComparisonScope = Literal["direct", "all"]
@@ -40,6 +40,20 @@ SCOPE_LABELS: Dict[ComparisonScope, str] = {
     "direct": "Только прямые диссертанты",
     "all": "Все поколения диссертантов",
 }
+
+# Яркая цветовая палитра для графика силуэта (оранжево-жёлто-коралловая гамма)
+SILHOUETTE_COLORS = [
+    "#FF8C42",  # Яркий оранжевый
+    "#FFD166",  # Жёлтый
+    "#F77F00",  # Тёмно-оранжевый
+    "#FCBF49",  # Золотисто-жёлтый
+    "#EF476F",  # Коралловый/розовый
+    "#06D6A0",  # Бирюзовый (для контраста)
+    "#118AB2",  # Синий (для контраста)
+    "#073B4C",  # Тёмно-синий
+    "#E07A5F",  # Терракотовый
+    "#81B29A",  # Шалфейный зелёный
+]
 
 
 # ==============================================================================
@@ -71,10 +85,7 @@ def get_ancestor_codes(code: str) -> List[str]:
 
 
 def is_descendant_of(code: str, ancestor: str) -> bool:
-    """
-    Проверяет, является ли code потомком ancestor.
-    Возвращает True если code == ancestor или code начинается с ancestor.
-    """
+    """Проверяет, является ли code потомком ancestor."""
     if code == ancestor:
         return True
     return code.startswith(ancestor + ".")
@@ -84,66 +95,27 @@ def filter_columns_by_nodes(
     columns: List[str],
     selected_nodes: Optional[List[str]] = None
 ) -> List[str]:
-    """
-    Фильтрует колонки по выбранным узлам.
-
-    Если selected_nodes is None — возвращает все колонки (весь базис).
-    Если указаны узлы — возвращает эти узлы и ВСЕ их потомки на любой глубине.
-
-    Args:
-        columns: Список колонок (кодов классификатора)
-        selected_nodes: Список выбранных узлов (корней поддеревьев)
-
-    Returns:
-        Отфильтрованный список колонок
-
-    Примеры:
-        - selected_nodes=None -> все колонки
-        - selected_nodes=["1.1"] -> 1.1, 1.1.1, 1.1.1.1, 1.1.1.2, 1.1.1.2.1, ...
-        - selected_nodes=["1.1", "2.2"] -> все под 1.1 + все под 2.2
-    """
+    """Фильтрует колонки по выбранным узлам."""
     if selected_nodes is None or len(selected_nodes) == 0:
-        # Весь базис — возвращаем все колонки
         return columns
 
-    # Фильтруем: оставляем колонки, которые являются потомками любого из выбранных узлов
     filtered = []
     for col in columns:
         for node in selected_nodes:
             if is_descendant_of(col, node):
                 filtered.append(col)
-                break  # Не нужно проверять остальные узлы для этой колонки
+                break
 
     return filtered
 
 
 def get_nodes_at_level(columns: List[str], level: int) -> List[str]:
-    """
-    Возвращает узлы указанного уровня.
-
-    Args:
-        columns: Все колонки
-        level: Уровень (1, 2, 3, ...)
-
-    Returns:
-        Отсортированный список узлов данного уровня
-    """
+    """Возвращает узлы указанного уровня."""
     return sorted(set(col for col in columns if get_code_depth(col) == level))
 
 
 def get_selectable_nodes(columns: List[str], max_level: int = 3) -> List[str]:
-    """
-    Возвращает узлы, доступные для выбора (уровни 1, 2, 3).
-    Узлы более глубоких уровней не предлагаются для выбора,
-    так как сравнение по ним может быть слишком узким.
-
-    Args:
-        columns: Все колонки
-        max_level: Максимальный уровень узлов для выбора (по умолчанию 3)
-
-    Returns:
-        Список узлов уровней 1..max_level
-    """
+    """Возвращает узлы уровней 1..max_level для выбора пользователем."""
     result = []
     for level in range(1, max_level + 1):
         result.extend(get_nodes_at_level(columns, level))
@@ -151,40 +123,24 @@ def get_selectable_nodes(columns: List[str], max_level: int = 3) -> List[str]:
 
 
 # ==============================================================================
-# ПОСТРОЕНИЕ МАТРИЦЫ ТРАНСФОРМАЦИИ ДЛЯ КОСОУГОЛЬНОГО БАЗИСА
+# КОСОУГОЛЬНЫЙ БАЗИС
 # ==============================================================================
 
 def build_oblique_transform_matrix(
     feature_columns: List[str],
     decay_factor: float = 0.5
 ) -> np.ndarray:
-    """
-    Строит матрицу трансформации для косоугольного базиса.
-
-    Идея косоугольного базиса: значения дочерних узлов частично 
-    наследуются от родительских, что учитывает иерархическую 
-    структуру тематического классификатора.
-
-    Args:
-        feature_columns: Список колонок (кодов)
-        decay_factor: Коэффициент затухания при переходе к потомкам (0-1)
-
-    Returns:
-        Матрица трансформации размера (n_features, n_features)
-    """
+    """Строит матрицу трансформации для косоугольного базиса."""
     n = len(feature_columns)
     col_to_idx = {col: i for i, col in enumerate(feature_columns)}
 
-    # Начинаем с единичной матрицы
     transform = np.eye(n)
 
     for i, col in enumerate(feature_columns):
         ancestors = get_ancestor_codes(col)
-        # Добавляем влияние предков с затуханием
-        for depth, ancestor in enumerate(ancestors[:-1]):  # исключаем сам узел
+        for depth, ancestor in enumerate(ancestors[:-1]):
             if ancestor in col_to_idx:
                 j = col_to_idx[ancestor]
-                # Чем дальше предок, тем меньше влияние
                 distance = len(ancestors) - depth - 1
                 weight = decay_factor ** distance
                 transform[i, j] = weight
@@ -197,17 +153,7 @@ def apply_oblique_transform(
     feature_columns: List[str],
     decay_factor: float = 0.5
 ) -> np.ndarray:
-    """
-    Применяет трансформацию косоугольного базиса к данным.
-
-    Args:
-        data: Исходные данные (n_samples, n_features)
-        feature_columns: Список колонок
-        decay_factor: Коэффициент затухания
-
-    Returns:
-        Трансформированные данные
-    """
+    """Применяет трансформацию косоугольного базиса к данным."""
     transform = build_oblique_transform_matrix(feature_columns, decay_factor)
     return data @ transform.T
 
@@ -222,26 +168,13 @@ def compute_distance_matrix(
     metric: DistanceMetric,
     decay_factor: float = 0.5
 ) -> np.ndarray:
-    """
-    Вычисляет матрицу расстояний между образцами.
-
-    Args:
-        data: Данные (n_samples, n_features)
-        feature_columns: Список колонок
-        metric: Тип метрики расстояния
-        decay_factor: Коэффициент затухания для косоугольного базиса
-
-    Returns:
-        Матрица расстояний (n_samples, n_samples)
-    """
-    # Применяем трансформацию для косоугольного базиса
+    """Вычисляет матрицу расстояний между образцами."""
     if metric in ("euclidean_oblique", "cosine_oblique"):
         data = apply_oblique_transform(data, feature_columns, decay_factor)
 
-    # Вычисляем расстояния
     if metric in ("euclidean_orthogonal", "euclidean_oblique"):
         return euclidean_distances(data)
-    else:  # cosine
+    else:
         return cosine_distances(data)
 
 
@@ -253,16 +186,7 @@ def load_scores_from_folder(
     folder_path: str = "basic_scores",
     specific_files: Optional[List[str]] = None
 ) -> pd.DataFrame:
-    """
-    Загружает данные тематических профилей из CSV файлов.
-
-    Args:
-        folder_path: Путь к папке с CSV файлами
-        specific_files: Список конкретных файлов (если None - все CSV из папки)
-
-    Returns:
-        DataFrame с объединёнными данными
-    """
+    """Загружает данные тематических профилей из CSV файлов."""
     base = Path(folder_path).expanduser().resolve()
 
     if specific_files:
@@ -293,7 +217,6 @@ def load_scores_from_folder(
     scores = scores[scores["Code"].str.len() > 0]
     scores = scores.drop_duplicates(subset=["Code"], keep="first")
 
-    # Конвертируем числовые колонки
     feature_columns = [c for c in scores.columns if c != "Code"]
     scores[feature_columns] = scores[feature_columns].apply(
         pd.to_numeric, errors="coerce"
@@ -304,7 +227,7 @@ def load_scores_from_folder(
 
 
 def get_feature_columns(scores: pd.DataFrame) -> List[str]:
-    """Возвращает список колонок с признаками (коды классификатора)."""
+    """Возвращает список колонок с признаками."""
     return [c for c in scores.columns if c != "Code"]
 
 
@@ -320,24 +243,9 @@ def gather_school_dataset(
     scope: ComparisonScope,
     lineage_func: Callable,
     rows_for_func: Callable,
+    author_column: str = "candidate.name",
 ) -> Tuple[pd.DataFrame, pd.DataFrame, int]:
-    """
-    Собирает данные тематических профилей для научной школы.
-
-    Args:
-        df: Основной DataFrame с диссертациями
-        index: Индекс для поиска
-        root: Имя руководителя (корень школы)
-        scores: DataFrame с тематическими профилями
-        scope: "direct" - только прямые диссертанты, "all" - все поколения
-        lineage_func: Функция построения генеалогии
-        rows_for_func: Функция поиска строк по имени
-
-    Returns:
-        (dataset, missing_info, total_count)
-    """
-    author_column = "candidate.name"
-
+    """Собирает данные тематических профилей для научной школы."""
     if scope == "direct":
         subset = rows_for_func(df, index, root)
     elif scope == "all":
@@ -345,36 +253,61 @@ def gather_school_dataset(
     else:
         raise ValueError(f"Неизвестный scope: {scope}")
 
-    if subset.empty:
-        empty = pd.DataFrame(columns=list(scores.columns) + ["school", author_column])
+    if subset is None or subset.empty:
+        empty = pd.DataFrame(columns=["Code", "school", author_column])
         return empty, empty, 0
 
-    # Получаем коды диссертаций
-    working = subset[["Code", author_column]].copy()
+    if "Code" not in subset.columns:
+        raise KeyError("В данных отсутствует колонка 'Code'")
+
+    cols_to_keep = ["Code"]
+    if author_column in subset.columns:
+        cols_to_keep.append(author_column)
+
+    working = subset[cols_to_keep].copy()
     working["Code"] = working["Code"].astype(str).str.strip()
     working = working[working["Code"].str.len() > 0]
+    working = working.drop_duplicates(subset=["Code"])
 
-    codes = working["Code"].unique().tolist()
+    if working.empty:
+        empty = pd.DataFrame(columns=["Code", "school", author_column])
+        return empty, empty, 0
 
-    # Объединяем с профилями
-    dataset = scores[scores["Code"].isin(codes)].copy()
-    dataset["school"] = root
-    dataset = dataset.merge(
-        working.drop_duplicates(subset=["Code"]),
-        on="Code",
-        how="left"
-    )
+    codes = working["Code"].tolist()
+    total_count = len(codes)
 
-    # Информация о пропущенных
-    missing_codes = sorted(set(codes) - set(dataset["Code"]))
-    missing_info = working[working["Code"].isin(missing_codes)].drop_duplicates(
-        subset=["Code"]
-    ).rename(columns={author_column: "candidate_name"})
+    scores_copy = scores.copy()
+    scores_copy["Code"] = scores_copy["Code"].astype(str).str.strip()
 
-    if author_column not in dataset.columns:
-        dataset[author_column] = None
+    matched_scores = scores_copy[scores_copy["Code"].isin(codes)].copy()
 
-    return dataset, missing_info, len(codes)
+    if matched_scores.empty:
+        missing_info = working.copy()
+        missing_info["school"] = root
+        empty = pd.DataFrame(columns=list(scores.columns) + ["school", author_column])
+        return empty, missing_info, total_count
+
+    matched_scores["school"] = root
+
+    if author_column in working.columns:
+        matched_scores = matched_scores.merge(
+            working[["Code", author_column]],
+            on="Code",
+            how="left"
+        )
+    else:
+        matched_scores[author_column] = None
+
+    found_codes = set(matched_scores["Code"].tolist())
+    missing_codes = [c for c in codes if c not in found_codes]
+
+    if missing_codes:
+        missing_info = working[working["Code"].isin(missing_codes)].copy()
+        missing_info["school"] = root
+    else:
+        missing_info = pd.DataFrame(columns=["Code", "school", author_column])
+
+    return matched_scores, missing_info, total_count
 
 
 # ==============================================================================
@@ -388,26 +321,12 @@ def compute_silhouette_analysis(
     selected_nodes: Optional[List[str]] = None,
     decay_factor: float = 0.5,
 ) -> Tuple[float, np.ndarray, np.ndarray, List[str], List[str]]:
-    """
-    Вычисляет анализ силуэта для сравнения научных школ.
-
-    Args:
-        datasets: Словарь {название_школы: DataFrame}
-        feature_columns: Все доступные колонки признаков
-        metric: Метрика расстояния
-        selected_nodes: Выбранные узлы для фильтрации (None = весь базис)
-        decay_factor: Коэффициент затухания для косоугольного базиса
-
-    Returns:
-        (overall_score, sample_scores, labels, school_order, used_columns)
-    """
-    # Фильтруем колонки по выбранным узлам
+    """Вычисляет анализ силуэта для сравнения научных школ."""
     used_columns = filter_columns_by_nodes(feature_columns, selected_nodes)
 
     if not used_columns:
         raise ValueError("Нет колонок для анализа после фильтрации")
 
-    # Объединяем данные всех школ
     all_data = []
     all_labels = []
     school_order = []
@@ -416,7 +335,6 @@ def compute_silhouette_analysis(
         if dataset.empty:
             continue
 
-        # Проверяем наличие колонок
         available_cols = [c for c in used_columns if c in dataset.columns]
         if not available_cols:
             continue
@@ -431,18 +349,14 @@ def compute_silhouette_analysis(
     if len(school_order) < 2:
         raise ValueError("Необходимо минимум 2 школы с данными для сравнения")
 
-    # Объединяем в один массив
     X = np.vstack(all_data)
     labels = np.array(all_labels)
 
-    # Проверяем минимальное количество образцов
     if X.shape[0] < 2:
         raise ValueError("Недостаточно образцов для анализа")
 
-    # Вычисляем матрицу расстояний
     distance_matrix = compute_distance_matrix(X, used_columns, metric, decay_factor)
 
-    # Вычисляем силуэт
     try:
         overall_score = silhouette_score(distance_matrix, labels, metric="precomputed")
         sample_scores = silhouette_samples(distance_matrix, labels, metric="precomputed")
@@ -463,24 +377,15 @@ def create_silhouette_plot(
     overall_score: float,
     metric_label: str,
 ) -> plt.Figure:
-    """
-    Создаёт график силуэта для научных школ.
-
-    Args:
-        sample_scores: Значения силуэта для каждого образца
-        labels: Метки кластеров (школ)
-        school_order: Порядок школ
-        overall_score: Общий коэффициент силуэта
-        metric_label: Название метрики для заголовка
-
-    Returns:
-        Matplotlib Figure
-    """
+    """Создаёт график силуэта для научных школ с яркой цветовой палитрой."""
     n_schools = len(school_order)
     fig, ax = plt.subplots(figsize=(10, max(6, n_schools * 1.5)))
 
     y_lower = 10
-    colors = plt.cm.Set2(np.linspace(0, 1, n_schools))
+
+    # Используем яркую палитру
+    colors = SILHOUETTE_COLORS[:n_schools] if n_schools <= len(SILHOUETTE_COLORS) else \
+             (SILHOUETTE_COLORS * ((n_schools // len(SILHOUETTE_COLORS)) + 1))[:n_schools]
 
     for idx, school in enumerate(school_order):
         mask = labels == idx
@@ -499,10 +404,9 @@ def create_silhouette_plot(
             cluster_scores,
             facecolor=colors[idx],
             edgecolor=colors[idx],
-            alpha=0.7,
+            alpha=0.85,
         )
 
-        # Подпись школы
         ax.text(
             -0.05,
             y_lower + size / 2,
@@ -510,14 +414,15 @@ def create_silhouette_plot(
             fontsize=10,
             va="center",
             ha="right",
+            fontweight="medium",
         )
 
         y_lower = y_upper + 10
 
-    # Вертикальная линия среднего значения
+    # Линия среднего значения
     ax.axvline(
         x=overall_score,
-        color="red",
+        color="#2D3436",
         linestyle="--",
         linewidth=2,
         label=f"Средний силуэт: {overall_score:.3f}"
@@ -533,13 +438,13 @@ def create_silhouette_plot(
     )
     ax.set_yticks([])
     ax.legend(loc="lower right", fontsize=10)
-    ax.grid(axis="x", linestyle="--", alpha=0.4)
+    ax.grid(axis="x", linestyle="--", alpha=0.3)
 
-    # Цветовая шкала интерпретации
-    ax.axvspan(-1, -0.25, alpha=0.1, color="red", label="Плохое разделение")
-    ax.axvspan(-0.25, 0.25, alpha=0.1, color="yellow", label="Слабое разделение")
-    ax.axvspan(0.25, 0.5, alpha=0.1, color="lightgreen", label="Умеренное разделение")
-    ax.axvspan(0.5, 1, alpha=0.1, color="green", label="Хорошее разделение")
+    # Фоновые зоны интерпретации (более мягкие цвета)
+    ax.axvspan(-1, -0.25, alpha=0.08, color="#e74c3c")
+    ax.axvspan(-0.25, 0.25, alpha=0.08, color="#f39c12")
+    ax.axvspan(0.25, 0.5, alpha=0.08, color="#27ae60")
+    ax.axvspan(0.5, 1, alpha=0.08, color="#16a085")
 
     fig.tight_layout()
     return fig
@@ -550,17 +455,7 @@ def create_comparison_summary(
     feature_columns: List[str],
     school_order: List[str],
 ) -> pd.DataFrame:
-    """
-    Создаёт сводную таблицу сравнения школ.
-
-    Args:
-        datasets: Словарь данных школ
-        feature_columns: Колонки признаков
-        school_order: Порядок школ
-
-    Returns:
-        DataFrame со сводной статистикой
-    """
+    """Создаёт сводную таблицу сравнения школ."""
     summary_data = []
 
     for school in school_order:
@@ -586,14 +481,8 @@ def create_comparison_summary(
     return pd.DataFrame(summary_data)
 
 
-# ==============================================================================
-# ИНТЕРПРЕТАЦИЯ РЕЗУЛЬТАТОВ
-# ==============================================================================
-
 def interpret_silhouette_score(score: float) -> str:
-    """
-    Возвращает текстовую интерпретацию коэффициента силуэта.
-    """
+    """Возвращает текстовую интерпретацию коэффициента силуэта."""
     if score >= 0.71:
         return "🟢 Отличное разделение: школы имеют чётко различающиеся тематические профили"
     elif score >= 0.51:
@@ -603,4 +492,4 @@ def interpret_silhouette_score(score: float) -> str:
     elif score >= 0:
         return "🟠 Слабое разделение: школы имеют схожие тематические профили"
     else:
-        return "🔴 Плохое разделение: тематические профили перемешаны, возможно неверная кластеризация"
+        return "🔴 Плохое разделение: тематические профили перемешаны"
