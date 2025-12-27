@@ -1907,15 +1907,15 @@ with tab_profiles:
                     if st.button("📥 Скачать результаты", key="profile_show_download"):
                         download_data_dialog(filtered_df, f"profiles_{selection_slug}", "profile")
                         
-with tab_schoolcomparison:
-    # Словарь {код: название} из THEMATIC_CLASSIFIER
-    classifier_labels = {code: title for code, title, _ in THEMATIC_CLASSIFIER}
-    
-    render_school_comparison_tab(
-        df=df,
-        idx=idx,
-        lineage_func=lineage,
-        rows_for_func=rows_for,
-        default_scores_folder="basic_scores",  # или другая папка
-        classifier_labels=classifier_labels,
-    )
+#with tab_schoolcomparison:
+#    # Словарь {код: название} из THEMATIC_CLASSIFIER
+#    classifier_labels = {code: title for code, title, _ in THEMATIC_CLASSIFIER}
+#    
+#    render_school_comparison_tab(
+#        df=df,
+#        idx=idx,
+#        lineage_func=lineage,
+#        rows_for_func=rows_for,
+#        default_scores_folder="basic_scores",  # или другая папка
+#        classifier_labels=classifier_labels,
+#    )
