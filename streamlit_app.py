@@ -454,9 +454,9 @@ def feedback_button() -> None:
 
 header_left, header_right = st.columns([0.78, 0.22])
 with header_left:
-    st.title("📚 Конструктор академических родословных")
+    st.title("📚 Академическая генеалогия")
     st.caption(
-        "Данные заранее загружены в репозиторий (папка db_lineages). Выберите начальных руководителей и создайте деревья."
+        "Платформа для построения деревьев научного руководства, поиска и сравнения диссертаций по содержательным и формальным критериям. В настоящий момент основу базы данных составляют диссертационные исследования по педагогическим наукам с 1995 по 2024 год."
     )
 with header_right:
     feedback_button()
@@ -1274,14 +1274,12 @@ shared_roots = st.query_params.get_all("root")
 valid_shared_roots = [r for r in shared_roots if r in all_supervisor_names]
 manual_prefill = "\n".join(r for r in shared_roots if r not in all_supervisor_names)
 
-#tab_lineages, tab_dissertations, tab_profiles, tab_schoolcomparison = st.tabs(
-tab_lineages, tab_dissertations, tab_profiles = st.tabs(
+tab_lineages, tab_dissertations, tab_profiles, tab_schoolcomparison = st.tabs(
     [
         "Построение деревьев",
         "Поиск информации о диссертациях",
         "Поиск по тематическим профилям",
-        #"Сравнение научных школ"
-    ]
+        "Сравнение научных школ"    ]
 )
 
 with tab_lineages:
@@ -1907,15 +1905,16 @@ with tab_profiles:
                     if st.button("📥 Скачать результаты", key="profile_show_download"):
                         download_data_dialog(filtered_df, f"profiles_{selection_slug}", "profile")
                         
-#with tab_schoolcomparison:
-#    # Словарь {код: название} из THEMATIC_CLASSIFIER
-#    classifier_labels = {code: title for code, title, _ in THEMATIC_CLASSIFIER}
-#    
-#    render_school_comparison_tab(
-#        df=df,
-#        idx=idx,
-#        lineage_func=lineage,
-#        rows_for_func=rows_for,
-#        default_scores_folder="basic_scores",  # или другая папка
-#        classifier_labels=classifier_labels,
-#    )
+with tab_schoolcomparison:
+    # Словарь {код: название} из THEMATIC_CLASSIFIER
+    classifier_labels = {code: title for code, title, _ in THEMATIC_CLASSIFIER}
+    
+    render_school_comparison_tab(
+        df=df,
+        idx=idx,
+        lineage_func=lineage,
+        rows_for_func=rows_for,
+        scores_folder="basic_scores",        # ← Папка с профилями
+        specific_files=None,                  # ← None = все CSV, или ["file1.csv", "file2.csv"]
+        classifier_labels=classifier_labels,  # ← Опционально: названия узлов
+    )
