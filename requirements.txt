@@ -6,4 +6,4 @@ matplotlib
 numpy
 scikit-learn
 openpyxl
-
+plotly
