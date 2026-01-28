@@ -166,7 +166,7 @@ def compute_distance_matrix(
     data: np.ndarray,
     feature_columns: List[str],
     metric: DistanceMetric,
-    decay_factor: float = 0.5
+    decay_factor: float = 0.1
 ) -> np.ndarray:
     """Вычисляет матрицу расстояний между образцами."""
     if metric in ("euclidean_oblique", "cosine_oblique"):
