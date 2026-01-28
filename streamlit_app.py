@@ -37,6 +37,8 @@ from sklearn.metrics import silhouette_samples, silhouette_score
 
 from school_comparison_tab import render_school_comparison_tab
 
+from school_comparison_new_tab import render_school_comparison_new_tab
+
 # ---------------------- Константы -----------------------------------------
 DATA_DIR = "db_lineages"      # папка с CSV внутри репозитория
 CSV_GLOB = "*.csv"            # какие файлы брать
