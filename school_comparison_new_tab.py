@@ -126,7 +126,7 @@ def show_instruction_dialog() -> None:
 # ОСНОВНАЯ ФУНКЦИЯ РЕНДЕРИНГА ВКЛАДКИ
 # ==============================================================================
 
-def render_school_comparison_tab(
+def render_school_comparison_new_tab(
     df: pd.DataFrame,
     idx: Dict[str, Set[int]],
     lineage_func: Callable,
