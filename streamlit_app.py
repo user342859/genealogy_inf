@@ -1274,12 +1274,13 @@ shared_roots = st.query_params.get_all("root")
 valid_shared_roots = [r for r in shared_roots if r in all_supervisor_names]
 manual_prefill = "\n".join(r for r in shared_roots if r not in all_supervisor_names)
 
-tab_lineages, tab_dissertations, tab_profiles, tab_schoolcomparison = st.tabs(
+tab_lineages, tab_dissertations, tab_profiles, tab_schoolcomparison, tab_schoolcomparison_new = st.tabs(
     [
         "Построение деревьев",
         "Поиск информации о диссертациях",
         "Поиск по тематическим профилям",
-        "Сравнение научных школ"    ]
+        "Сравнение научных школ",
+        "Сравнение научных школ. Вариант 2"    ]
 )
 
 with tab_lineages:
@@ -1910,6 +1911,20 @@ with tab_schoolcomparison:
     classifier_labels = {code: title for code, title, _ in THEMATIC_CLASSIFIER}
     
     render_school_comparison_tab(
+        df=df,
+        idx=idx,
+        lineage_func=lineage,
+        rows_for_func=rows_for,
+        scores_folder="basic_scores",        # ← Папка с профилями
+        specific_files=None,                  # ← None = все CSV, или ["file1.csv", "file2.csv"]
+        classifier_labels=classifier_labels,  # ← Опционально: названия узлов
+    )
+
+with tab_schoolcomparison_new:
+    # Словарь {код: название} из THEMATIC_CLASSIFIER
+    classifier_labels = {code: title for code, title, _ in THEMATIC_CLASSIFIER}
+    
+    render_school_comparison_new_tab(
         df=df,
         idx=idx,
         lineage_func=lineage,
