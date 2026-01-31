@@ -503,16 +503,59 @@ def to_short_name(full_name: str) -> str:
     if len(parts) > 2: initials += parts[2][0] + "."
     return f"{surname} {initials}"
 
+
+def canonicalize_author_name(name: str) -> str:
+    """Нормализует ФИО/инициалы в единый канонический вид.
+
+    Цель: устойчиво матчить
+    - дерево: "Фамилия Имя Отчество" → to_short_name → "Фамилия И.И."
+    - статьи: "Фамилия И.И." / "Фамилия И. И." / "Фамилия Иван" и т.п.
+
+    Возвращает строку в нижнем регистре вида "фамилия и.и." (инициалы могут отсутствовать).
+    """
+    if not isinstance(name, str):
+        return ""
+    s = name.replace("\xa0", " ").strip()
+    if not s:
+        return ""
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"^[,;]+|[,;]+$", "", s).strip()
+    if not s:
+        return ""
+
+    tokens = s.replace(",", " ").split()
+    if not tokens:
+        return ""
+
+    surname = tokens[0].strip()
+    rest = tokens[1:]
+
+    initials_letters: List[str] = []
+    for t in rest:
+        letters = re.findall(r"[A-Za-zА-Яа-яЁё]", t)
+        if not letters:
+            continue
+        # "И.И." / "И. И." → берем все буквы;
+        # "Иван" → только первую букву
+        if ("." in t) or (len(t) <= 2):
+            initials_letters.extend(letters)
+        else:
+            initials_letters.append(letters[0])
+
+    initials = "".join([ch.lower() + "." for ch in initials_letters])
+    base = f"{surname.lower()} {initials}".strip()
+    return re.sub(r"\s+", " ", base)
+
 def normalize_authors_set(authors_str: str) -> Set[str]:
-    """'Иванов И.И.; Петров П.П.' -> {'иванов и.и.', 'петров п.п.'}"""
-    if not isinstance(authors_str, str): return set()
-    raw_names = re.split(r'[;]', authors_str)
-    res = set()
+    """'Иванов И.И.; Петров П. П.' -> {'иванов и.и.', 'петров п.п.'}"""
+    if not isinstance(authors_str, str):
+        return set()
+    raw_names = re.split(r"[;,]", authors_str)
+    res: Set[str] = set()
     for n in raw_names:
-        clean = n.strip()
-        if clean:
-            clean = re.sub(r'\s+', ' ', clean)
-            res.add(clean.lower())
+        canon = canonicalize_author_name(n)
+        if canon:
+            res.add(canon)
     return res
 
 def load_articles_data() -> pd.DataFrame:
@@ -562,7 +605,13 @@ def prepare_articles_dataset(
 
         if not school_members: continue
             
-        school_members_short = {to_short_name(n).lower() for n in school_members if n}
+        school_members_short: Set[str] = set()
+        for n in school_members:
+            if not n:
+                continue
+            canon = canonicalize_author_name(to_short_name(n))
+            if canon:
+                school_members_short.add(canon)
         
         # Фильтр статей
         mask = df_articles["Authors"].apply(
@@ -623,15 +672,16 @@ def compute_article_analysis(
         return {}
     
     X = df[feature_columns].values
-    labels = df["school"].values
+    labels = df["school"].astype(str).values
     unique_labels = np.unique(labels)
     school_order = list(unique_labels)
     
+    # Для силуэта/DB/CH нужно минимум 2 кластера и >= 2 объектов.
     if len(unique_labels) < 2 or X.shape[0] < 2:
         return {
             "silhouette_avg": 0, 
             "sample_silhouette_values": np.zeros(X.shape[0]), 
-            "labels": np.zeros(X.shape[0]),
+            "labels": labels,
             "school_order": school_order,
             "davies_bouldin": None, 
             "calinski_harabasz": None, 
@@ -658,13 +708,24 @@ def compute_article_analysis(
     else:
         X_for_metrics = X
 
-    db_score = davies_bouldin_score(X_for_metrics, labels)
-    ch_score = calinski_harabasz_score(X_for_metrics, labels)
+    try:
+        db_score = davies_bouldin_score(X_for_metrics, labels)
+    except Exception:
+        db_score = None
+
+    try:
+        ch_score = calinski_harabasz_score(X_for_metrics, labels)
+    except Exception:
+        ch_score = None
 
     # 4. Центроиды и расстояние
-    centroids = [X_for_metrics[labels == lab].mean(axis=0) for lab in unique_labels]
-    centroid_dist_matrix = cdist(centroids, centroids, metric='euclidean')
-    dist_info = centroid_dist_matrix[0, 1] if len(unique_labels) == 2 else centroid_dist_matrix
+    dist_info = None
+    try:
+        centroids = [X_for_metrics[labels == lab].mean(axis=0) for lab in unique_labels]
+        centroid_dist_matrix = cdist(centroids, centroids, metric='euclidean')
+        dist_info = centroid_dist_matrix[0, 1] if len(unique_labels) == 2 else centroid_dist_matrix
+    except Exception:
+        dist_info = None
 
     return {
         "silhouette_avg": silhouette_avg,
@@ -680,18 +741,35 @@ def create_comparison_summary(df: pd.DataFrame, feature_cols: List[str]) -> pd.D
     """Создает таблицу со статистикой по школам (как в school_comparison)."""
     summary_data = []
     unique_schools = df["school"].unique()
+
+    theme_cols = [c for c in feature_cols if c != "Year_num"]
+    has_year = ("Year_num" in df.columns)
     
     for school in unique_schools:
         sub = df[df["school"] == school]
+        # numeric cols may include Year_num; тематическую сумму считаем без него
         num_data = sub[feature_cols]
+        theme_data = sub[theme_cols] if theme_cols else sub.iloc[:, 0:0]
+
+        theme_sum = theme_data.sum(axis=1) if not theme_data.empty else pd.Series(0.0, index=sub.index)
+        theme_coverage = (theme_data > 0).sum(axis=1).mean() if not theme_data.empty else 0.0
+
+        avg_year = None
+        year_span = None
+        if has_year:
+            years = pd.to_numeric(sub.get("Year_num", 0), errors="coerce").replace(0, np.nan).dropna()
+            if not years.empty:
+                avg_year = float(years.mean())
+                year_span = f"{int(years.min())}–{int(years.max())}" if years.nunique() > 1 else f"{int(years.iloc[0])}"
         
         summary_data.append({
             "Научная школа": school,
             "Количество статей": len(sub),
-            "Средняя сумма профиля": num_data.sum(axis=1).mean(),
-            "Стд. отклонение": num_data.sum(axis=1).std(),
-            # Считаем ненулевые признаки (охват тем)
-            "Охват тем (среднее)": (num_data > 0).sum(axis=1).mean()
+            "Средняя сумма профиля": float(theme_sum.mean()) if len(theme_sum) else 0.0,
+            "Стд. отклонение": float(theme_sum.std()) if len(theme_sum) > 1 else 0.0,
+            "Охват тем (среднее)": float(theme_coverage),
+            "Средний год": ("—" if avg_year is None else round(avg_year, 1)),
+            "Диапазон годов": ("—" if year_span is None else year_span),
         })
         
     return pd.DataFrame(summary_data)
