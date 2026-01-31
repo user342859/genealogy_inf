@@ -26,8 +26,6 @@ from profiles_search import (
     DEFAULT_MIN_SCORE,
 )
 
-from entropy_specificity_tab import render_entropy_specificity_tab
-
 
 # ==============================================================================
 # КОНСТАНТЫ
