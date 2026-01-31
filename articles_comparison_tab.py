@@ -327,9 +327,9 @@ def render_articles_comparison_tab(
     # --- Расчёт метрик ---
     with st.spinner("Расчёт силуэта и прочих метрик..."):
         results = compute_article_analysis(
-            dataset=dataset,
-            used_features=used_features,
-            metric_choice=metric_choice,
+            df=dataset,
+            feature_columns=used_features,
+            metric=metric_choice,
             decay_factor=decay_factor,
         )
 
