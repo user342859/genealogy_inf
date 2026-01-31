@@ -750,6 +750,57 @@ def compute_article_analysis(
     }
 
 
+
+def create_comparison_summary(df: pd.DataFrame, feature_cols: List[str]) -> pd.DataFrame:
+    """Создает таблицу со статистикой по школам.
+
+    Важно: если среди признаков есть Year_num (временной фактор), он НЕ должен
+    доминировать в сумме тематического профиля. Поэтому для суммы/охвата тем
+    Year_num исключается, но при этом выводится отдельной статистикой.
+    """
+    summary_data: List[Dict[str, Any]] = []
+    unique_schools = df["school"].unique()
+
+    thematic_cols = [c for c in feature_cols if c != "Year_num"]
+    has_year = "Year_num" in feature_cols and "Year_num" in df.columns
+
+    for school in unique_schools:
+        sub = df[df["school"] == school]
+
+        num_data = sub[thematic_cols] if thematic_cols else pd.DataFrame(index=sub.index)
+
+        row: Dict[str, Any] = {
+            "Научная школа": school,
+            "Количество статей": int(len(sub)),
+        }
+
+        if len(thematic_cols) > 0:
+            profile_sum = num_data.sum(axis=1)
+            row.update({
+                "Средняя сумма профиля": float(profile_sum.mean()),
+                "Стд. отклонение": float(profile_sum.std(ddof=1)) if len(profile_sum) > 1 else 0.0,
+                "Охват тем (среднее)": float((num_data > 0).sum(axis=1).mean()),
+            })
+        else:
+            row.update({
+                "Средняя сумма профиля": 0.0,
+                "Стд. отклонение": 0.0,
+                "Охват тем (среднее)": 0.0,
+            })
+
+        if has_year:
+            years = sub["Year_num"].dropna()
+            if len(years) > 0:
+                row["Средний год"] = float(years.mean())
+                row["Диапазон годов"] = f"{int(years.min())}–{int(years.max())}"
+            else:
+                row["Средний год"] = np.nan
+                row["Диапазон годов"] = ""
+
+        summary_data.append(row)
+
+    return pd.DataFrame(summary_data)
+
 def create_articles_silhouette_plot(
     sample_scores: np.ndarray,
     labels: np.ndarray,
