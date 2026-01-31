@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import io
+import re
 import pandas as pd
 import streamlit as st
 from typing import Callable, Dict, List, Optional, Set
@@ -84,11 +85,16 @@ def download_articles_results(df: pd.DataFrame, file_base: str):
 # ==============================================================================
 
 def render_articles_comparison_tab(
-    df: pd.DataFrame,
-    idx: Dict[str, Set[int]],
-    lineage_func: Callable,
-    selected_roots: List[str],
-    classifier_labels: Dict[str, str]
+    # Совместимость: streamlit_app.py вызывает с именованными аргументами
+    # df_lineage/idx_lineage (а раньше были df/idx).
+    df: Optional[pd.DataFrame] = None,
+    idx: Optional[Dict[str, Set[int]]] = None,
+    lineage_func: Optional[Callable] = None,
+    selected_roots: Optional[List[str]] = None,
+    classifier_labels: Optional[Dict[str, str]] = None,
+    *,
+    df_lineage: Optional[pd.DataFrame] = None,
+    idx_lineage: Optional[Dict[str, Set[int]]] = None,
 ):
     # Кнопки помощи в верхней части
     col_help1, col_help2, _ = st.columns([0.2, 0.25, 0.55])
@@ -101,9 +107,26 @@ def render_articles_comparison_tab(
 
     st.header("🔬 Сравнение научных школ по публикациям")
 
+    # --- НОРМАЛИЗАЦИЯ АРГУМЕНТОВ ---
+    if df_lineage is None:
+        df_lineage = df
+    if idx_lineage is None:
+        idx_lineage = idx
+    if selected_roots is None:
+        selected_roots = []
+    if classifier_labels is None:
+        classifier_labels = {}
+    if lineage_func is None:
+        st.error("❌ Не передана функция lineage_func")
+        return
+
     # --- ПРОВЕРКИ ---
     if len(selected_roots) < 2:
         st.warning("⚠️ Для проведения сравнения необходимо выбрать **минимум двух** руководителей на вкладке «Построение деревьев» и нажать там кнопку «Построить».")
+        return
+
+    if df_lineage is None or idx_lineage is None:
+        st.error("❌ Не переданы данные генеалогии (df_lineage/idx_lineage)")
         return
 
     df_articles = load_articles_data()
@@ -178,26 +201,75 @@ def render_articles_comparison_tab(
 
     # --- ЗАПУСК ---
     if st.button("🚀 Запустить сравнительный анализ", type="primary"):
-        # Маппинг "Год" обратно в "Year" для логики
-        logic_basis = ["Year" if x == "Год" else x for x in selected_basis]
+        if not selected_basis:
+            st.warning("⚠️ Выберите базис для сравнения")
+            return
+
+        # Логика выбора базиса:
+        # - "Все разделы классификатора" используем как режим 'full' только если это
+        #   единственный тематический выбор (иначе игнорируем этот пункт).
+        selected_nodes_ui = [
+            x for x in selected_basis if x not in ("Все разделы классификатора", "Год")
+        ]
+        use_all_topics = ("Все разделы классификатора" in selected_basis) and (len(selected_nodes_ui) == 0)
+        include_year = ("Год" in selected_basis)
+
+        # Маппинг UI -> логика
+        logic_nodes = selected_nodes_ui
+        logic_basis: Optional[List[str]]
+        if use_all_topics:
+            # None → внутри prepare_articles_dataset будет использован весь тематический базис.
+            logic_basis = None
+        else:
+            logic_basis = logic_nodes + (["Year"] if include_year else [])
         
         with st.spinner("Сбор данных и расчет метрик..."):
             dataset, used_features = prepare_articles_dataset(
                 roots=selected_roots,
-                df_lineage=df,
-                idx_lineage=idx,
+                df_lineage=df_lineage,
+                idx_lineage=idx_lineage,
                 lineage_func=lineage_func,
                 df_articles=df_articles,
                 scope=scope,
                 selected_features_keys=logic_basis
             )
 
+            # Если выбран режим "весь базис" и дополнительно добавлен год,
+            # prepare_articles_dataset вернет только тематические признаки.
+            if use_all_topics and include_year and ("Year_num" in dataset.columns):
+                if "Year_num" not in used_features:
+                    used_features = used_features + ["Year_num"]
+
             if dataset.empty:
                 st.error("❌ По выбранным критериям статьи не найдены.")
                 return
 
+            # Минимум 2 школы с данными
+            nunique_schools = int(dataset["school"].nunique()) if "school" in dataset.columns else 0
+            if nunique_schools < 2:
+                st.error(
+                    "❌ Недостаточно данных для сравнения: статьи найдены только для одной школы. "
+                    "Попробуйте выбрать другой охват (все поколения) или другой набор руководителей."
+                )
+                # Покажем, что именно нашли
+                st.dataframe(
+                    dataset[["school", "Article_id", "Authors", "Title", "Year"]]
+                    .sort_values(["school", "Year"], ascending=[True, True]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                return
+
+            if not used_features:
+                st.error("❌ Не удалось выбрать признаки для анализа (пустой базис)")
+                return
+
             # Проведение вычислений
             results = compute_article_analysis(dataset, used_features, metric_choice, decay_factor)
+
+            if not results:
+                st.error("❌ Анализ не выполнен: нет данных или признаков")
+                return
 
             # --- ВЫВОД РЕЗУЛЬТАТОВ ---
             st.subheader("📊 Результаты сравнительного анализа")
