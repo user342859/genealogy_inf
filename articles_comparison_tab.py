@@ -94,16 +94,6 @@ def render_articles_comparison_tab(
     df_lineage: pd.DataFrame = None,
     idx_lineage: Dict[str, Set[int]] = None,
 ):
-    # поддержка обоих способов вызова (df/idx и df_lineage/idx_lineage)
-    if df is None and df_lineage is not None:
-        df = df_lineage
-    if idx is None and idx_lineage is not None:
-        idx = idx_lineage
-
-    if df is None or idx is None:
-        raise TypeError(
-            "render_articles_comparison_tab: не переданы df/idx (или df_lineage/idx_lineage)"
-        ):
     # Кнопки помощи в верхней части
     col_help1, col_help2, _ = st.columns([0.2, 0.25, 0.55])
     with col_help1:
