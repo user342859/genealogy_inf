@@ -503,61 +503,54 @@ def to_short_name(full_name: str) -> str:
     if len(parts) > 2: initials += parts[2][0] + "."
     return f"{surname} {initials}"
 
+
 def canonicalize_author_name(name: str) -> str:
-    """Нормализует имя автора к единому виду: 'иванов и.и.'.
+    """Нормализует ФИО/инициалы в единый канонический вид.
 
-    Устойчиво к вариантам вроде:
-    - 'Иванов И. И.' / 'Иванов И.И.' / 'Иванов ИИ' / 'Иванов И И'
-    - разным пробелам и пунктуации
+    Цель: устойчиво матчить
+    - дерево: "Фамилия Имя Отчество" → to_short_name → "Фамилия И.И."
+    - статьи: "Фамилия И.И." / "Фамилия И. И." / "Фамилия Иван" и т.п.
 
-    Возвращает пустую строку, если распознать не удалось.
+    Возвращает строку в нижнем регистре вида "фамилия и.и." (инициалы могут отсутствовать).
     """
     if not isinstance(name, str):
         return ""
-    s = name.strip().lower()
+    s = name.replace("\xa0", " ").strip()
     if not s:
         return ""
-    # унификация ё/е и пунктуации
-    s = s.replace("ё", "е")
-    s = s.replace(",", " ")
-    s = re.sub(r"\s+", " ", s).strip()
-
-    # убираем все пробелы, чтобы поймать 'с. д.' и т.п.
-    compact = re.sub(r"\s+", "", s)
-
-    # Находим начало инициалов как первую букву, за которой стоит точка
-    m = re.search(r"[a-zа-я]\.", compact)
-    if m:
-        pos = m.start()
-        surname = compact[:pos]
-        initials_raw = compact[pos:]
-    else:
-        # если точек нет, пробуем считать последние 1-2 буквы инициалами
-        letters = re.findall(r"[a-zа-я]", compact)
-        if len(letters) < 2:
-            return ""
-        # эвристика: фамилия = всё до последних 2 букв
-        # (это лучше, чем ничего, для 'ивановии' -> 'иванов и.и.')
-        surname = compact[:-2]
-        initials_raw = compact[-2:]
-
-    surname = re.sub(r"[^a-zа-я\-]", "", surname)
-    if not surname:
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"^[,;]+|[,;]+$", "", s).strip()
+    if not s:
         return ""
 
-    init_letters = re.findall(r"[a-zа-я]", initials_raw)
-    if not init_letters:
+    tokens = s.replace(",", " ").split()
+    if not tokens:
         return ""
 
-    initials = "".join(ch + "." for ch in init_letters[:3])  # максимум 3 инициала
-    return f"{surname} {initials}"
+    surname = tokens[0].strip()
+    rest = tokens[1:]
 
+    initials_letters: List[str] = []
+    for t in rest:
+        letters = re.findall(r"[A-Za-zА-Яа-яЁё]", t)
+        if not letters:
+            continue
+        # "И.И." / "И. И." → берем все буквы;
+        # "Иван" → только первую букву
+        if ("." in t) or (len(t) <= 2):
+            initials_letters.extend(letters)
+        else:
+            initials_letters.append(letters[0])
+
+    initials = "".join([ch.lower() + "." for ch in initials_letters])
+    base = f"{surname.lower()} {initials}".strip()
+    return re.sub(r"\s+", " ", base)
 
 def normalize_authors_set(authors_str: str) -> Set[str]:
-    """'Иванов И.И.; Петров П.П.' -> {'иванов и.и.', 'петров п.п.'}"""
+    """'Иванов И.И.; Петров П. П.' -> {'иванов и.и.', 'петров п.п.'}"""
     if not isinstance(authors_str, str):
         return set()
-    raw_names = re.split(r"[;]", authors_str)
+    raw_names = re.split(r"[;,]", authors_str)
     res: Set[str] = set()
     for n in raw_names:
         canon = canonicalize_author_name(n)
@@ -606,26 +599,20 @@ def prepare_articles_dataset(
         G, _ = lineage_func(df_lineage, idx_lineage, root)
         
         if scope == "direct":
-            members_full = set(G.successors(root)) if (G is not None and G.has_node(root)) else set()
+            school_members = set(G.successors(root)) if G.has_node(root) else set()
         else:
-            # 'all' / 'all_generations': берём все узлы графа школы
-            members_full = set(G.nodes()) if (G is not None and G.has_node(root)) else set()
+            school_members = set(G.nodes()) - {root} if G.has_node(root) else set()
 
-        # ВАЖНО: включаем самого руководителя. Иначе статьи, где автор = root,
-        # никогда не попадут в выборку его школы (это и даёт эффект 'только одна школа').
-        if isinstance(root, str) and root.strip():
-            members_full.add(root)
-
-        # Нормализуем к единому виду 'фамилия и.и.'
-        school_members_short = {
-            canonicalize_author_name(to_short_name(n))
-            for n in members_full
-            if isinstance(n, str) and n.strip()
-        }
-        school_members_short.discard("")
-
-        if not school_members_short:
-            continue
+        if not school_members: continue
+            
+        school_members_short: Set[str] = set()
+        for n in school_members:
+            if not n:
+                continue
+            canon = canonicalize_author_name(to_short_name(n))
+            if canon:
+                school_members_short.add(canon)
+        
         # Фильтр статей
         mask = df_articles["Authors"].apply(
             lambda x: not normalize_authors_set(x).isdisjoint(school_members_short)
@@ -673,48 +660,49 @@ def prepare_articles_dataset(
 # ==============================================================================
 
 def compute_article_analysis(
-    df: pd.DataFrame,
+    df: pd.DataFrame, 
     feature_columns: List[str],
     metric: DistanceMetric,
     decay_factor: float = 0.5
 ) -> Dict[str, Any]:
     """
     Полный цикл анализа: вычисление матрицы расстояний и метрик.
-    Возвращает метрики и данные для визуализаций (силуэт и т.п.).
     """
     if df.empty or not feature_columns:
         return {}
-
+    
     X = df[feature_columns].values
     labels = df["school"].astype(str).values
     unique_labels = np.unique(labels)
     school_order = list(unique_labels)
-
-    # Минимальные условия: хотя бы 2 школы и 2 статьи
+    
+    # Для силуэта/DB/CH нужно минимум 2 кластера и >= 2 объектов.
     if len(unique_labels) < 2 or X.shape[0] < 2:
         return {
-            "silhouette_avg": 0.0,
-            "sample_silhouette_values": np.zeros(X.shape[0]),
+            "silhouette_avg": 0, 
+            "sample_silhouette_values": np.zeros(X.shape[0]), 
             "labels": labels,
             "school_order": school_order,
-            "unique_schools": school_order,
-            "davies_bouldin": None,
-            "calinski_harabasz": None,
+            "davies_bouldin": None, 
+            "calinski_harabasz": None, 
             "centroids_dist": None
         }
 
-    # 1) Матрица расстояний
+    # 1. Матрица расстояний
     dist_matrix = compute_distance_matrix(X, feature_columns, metric, decay_factor)
-
-    # 2) Силуэт (precomputed)
+    
+    # 2. Силуэт (всегда precomputed)
     try:
         silhouette_avg = silhouette_score(dist_matrix, labels, metric="precomputed")
         sample_silhouette_values = silhouette_samples(dist_matrix, labels, metric="precomputed")
     except Exception:
-        silhouette_avg = 0.0
+        silhouette_avg = 0
         sample_silhouette_values = np.zeros(X.shape[0])
 
-    # 3) DB/CH считаются в векторном пространстве (облика-метрики -> трансформация)
+    # 3. Другие метрики (DB и CH считаются в Евклидовом пространстве, 
+    # либо в трансформированном, если мы хотим честности.
+    # Для простоты sklearn функций передаем X или трансформированный X)
+    
     if "oblique" in metric:
         X_for_metrics = apply_oblique_transform(X, feature_columns, decay_factor)
     else:
@@ -730,25 +718,65 @@ def compute_article_analysis(
     except Exception:
         ch_score = None
 
-    # 4) Центроиды и расстояния между ними (евклидово)
+    # 4. Центроиды и расстояние
+    dist_info = None
     try:
         centroids = [X_for_metrics[labels == lab].mean(axis=0) for lab in unique_labels]
-        centroid_dist_matrix = cdist(centroids, centroids, metric="euclidean")
+        centroid_dist_matrix = cdist(centroids, centroids, metric='euclidean')
         dist_info = centroid_dist_matrix[0, 1] if len(unique_labels) == 2 else centroid_dist_matrix
     except Exception:
         dist_info = None
 
     return {
-        "silhouette_avg": float(silhouette_avg),
+        "silhouette_avg": silhouette_avg,
         "sample_silhouette_values": sample_silhouette_values,
         "labels": labels,
         "school_order": school_order,
-        "unique_schools": school_order,
         "davies_bouldin": db_score,
         "calinski_harabasz": ch_score,
         "centroids_dist": dist_info
     }
 
+def create_comparison_summary(df: pd.DataFrame, feature_cols: List[str]) -> pd.DataFrame:
+    """Создает таблицу со статистикой по школам (как в school_comparison)."""
+    summary_data = []
+    unique_schools = df["school"].unique()
+
+    theme_cols = [c for c in feature_cols if c != "Year_num"]
+    has_year = ("Year_num" in df.columns)
+    
+    for school in unique_schools:
+        sub = df[df["school"] == school]
+        # numeric cols may include Year_num; тематическую сумму считаем без него
+        num_data = sub[feature_cols]
+        theme_data = sub[theme_cols] if theme_cols else sub.iloc[:, 0:0]
+
+        theme_sum = theme_data.sum(axis=1) if not theme_data.empty else pd.Series(0.0, index=sub.index)
+        theme_coverage = (theme_data > 0).sum(axis=1).mean() if not theme_data.empty else 0.0
+
+        avg_year = None
+        year_span = None
+        if has_year:
+            years = pd.to_numeric(sub.get("Year_num", 0), errors="coerce").replace(0, np.nan).dropna()
+            if not years.empty:
+                avg_year = float(years.mean())
+                year_span = f"{int(years.min())}–{int(years.max())}" if years.nunique() > 1 else f"{int(years.iloc[0])}"
+        
+        summary_data.append({
+            "Научная школа": school,
+            "Количество статей": len(sub),
+            "Средняя сумма профиля": float(theme_sum.mean()) if len(theme_sum) else 0.0,
+            "Стд. отклонение": float(theme_sum.std()) if len(theme_sum) > 1 else 0.0,
+            "Охват тем (среднее)": float(theme_coverage),
+            "Средний год": ("—" if avg_year is None else round(avg_year, 1)),
+            "Диапазон годов": ("—" if year_span is None else year_span),
+        })
+        
+    return pd.DataFrame(summary_data)
+
+# ==============================================================================
+# ВИЗУАЛИЗАЦИЯ
+# ==============================================================================
 
 def create_articles_silhouette_plot(
     sample_scores: np.ndarray,
