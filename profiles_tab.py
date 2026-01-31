@@ -14,17 +14,42 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import streamlit as st
 
-from profiles_search import (
-    load_basic_scores,
-    get_feature_columns,
-    search_by_codes,
-    merge_with_dissertation_info,
-    format_results_for_display,
-    validate_code_selection,
-    classifier_label,
-    SELECTION_LIMIT,
-    DEFAULT_MIN_SCORE,
-)
+# Безопасные импорты с fallback
+try:
+    from profiles_search import (
+        load_basic_scores,
+        get_feature_columns,
+        search_by_codes,
+        merge_with_dissertation_info,
+        format_results_for_display,
+        validate_code_selection,
+        classifier_label,
+        SELECTION_LIMIT,
+        DEFAULT_MIN_SCORE,
+    )
+except ImportError:
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from profiles_search import (
+        load_basic_scores,
+        get_feature_columns,
+        search_by_codes,
+        merge_with_dissertation_info,
+        format_results_for_display,
+        validate_code_selection,
+        classifier_label,
+        SELECTION_LIMIT,
+        DEFAULT_MIN_SCORE,
+    )
+
+try:
+    from entropy_specificity_tab import render_entropy_specificity_tab
+except ImportError:
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from entropy_specificity_tab import render_entropy_specificity_tab
 
 
 # ==============================================================================
@@ -364,6 +389,8 @@ def render_search_by_topics(
 
             except Exception as exc:
                 st.error(f"❌ Ошибка при поиске: {exc}")
+                import traceback
+                st.code(traceback.format_exc())
                 return
 
         # Показываем результаты
@@ -493,6 +520,8 @@ def render_profiles_tab(
         return
     except Exception as e:
         st.error(f"❌ Ошибка загрузки данных: {e}")
+        import traceback
+        st.code(traceback.format_exc())
         return
 
     st.markdown("---")
