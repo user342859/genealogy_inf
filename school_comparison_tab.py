@@ -1,272 +1,549 @@
 """
-Модуль Streamlit-вкладки сравнения научных школ по статьям.
+Модуль Streamlit-вкладки сравнения научных школ.
+Импортируйте и вызывайте render_school_comparison_tab() в основном приложении.
 """
 
 from __future__ import annotations
 
 import io
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Set, Tuple
+
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import streamlit as st
-from typing import Callable, Dict, List, Optional, Set
 
-from articles_comparison import (
+from school_comparison import (
     DistanceMetric,
+    ComparisonScope,
     DISTANCE_METRIC_LABELS,
-    ARTICLES_HELP_TEXT,
-    CLASSIFIER_LIST_TEXT,
-    load_articles_data,
-    prepare_articles_dataset,
-    compute_article_analysis,
-    create_articles_silhouette_plot,
+    SCOPE_LABELS,
+    load_scores_from_folder,
+    get_feature_columns,
+    get_nodes_at_level,
+    get_selectable_nodes,
+    filter_columns_by_nodes,
+    get_code_depth,
+    compute_silhouette_analysis,
+    create_silhouette_plot,
     create_comparison_summary,
-    get_code_depth
+    interpret_silhouette_score,
+    gather_school_dataset,
 )
 
-# Попытка импорта openpyxl для Excel
-try:
-    import openpyxl
-except ImportError:
-    openpyxl = None
 
 # ==============================================================================
-# ВСПОМОГАТЕЛЬНЫЕ ОКНА (DIALOGS)
+# КОНСТАНТЫ
 # ==============================================================================
 
-def show_articles_instruction():
-    """Показывает инструкцию во всплывающем окне."""
-    @st.dialog("📖 Инструкция: Сравнение по статьям", width="large")
-    def _show():
-        st.markdown(ARTICLES_HELP_TEXT)
-    _show()
+DEFAULT_SCORES_FOLDER = "basic_scores"
+AUTHOR_COLUMN = "candidate.name"
 
-def show_classifier_list():
-    """Показывает список классификатора во всплывающем окне."""
-    @st.dialog("🗂 Список тематического классификатора", width="large")
-    def _show():
-        # Здесь вы можете вставить свой полный список
-        st.markdown(CLASSIFIER_LIST_TEXT)
-    _show()
+# ==============================================================================
+# ИНСТРУКЦИЯ ДЛЯ ВКЛАДКИ
+# ==============================================================================
 
-def download_articles_results(df: pd.DataFrame, file_base: str):
-    """Модальное окно для скачивания результатов (CSV/XLSX)."""
-    @st.dialog("📥 Скачать результаты анализа")
-    def _show():
-        st.write("Выберите формат для сохранения данных:")
-        
-        # CSV
-        csv_data = df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-        st.download_button(
-            label="📄 Скачать CSV",
-            data=csv_data,
-            file_name=f"{file_base}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+INSTRUCTION_SCHOOL_COMPARISON = """
+## 🔬 Сравнение научных школ по тематическим профилям
 
-        # XLSX
-        if openpyxl:
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False)
-            st.download_button(
-                label="📊 Скачать Excel (XLSX)",
-                data=buffer.getvalue(),
-                file_name=f"{file_base}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+Этот инструмент позволяет оценить, насколько различаются тематические направления 
+диссертаций, защищённых под руководством разных учёных.
+
+---
+
+### 📋 Основные возможности
+
+- **Сравнение тематических профилей** нескольких научных школ
+- **Визуализация различий** с помощью графика силуэта
+- **Гибкий выбор параметров**: охват диссертаций, метрика расстояния, базис сравнения
+
+---
+
+### 🚀 Как использовать
+
+1. **Выберите научные школы** — укажите минимум 2 руководителей для сравнения
+2. **Настройте параметры анализа**:
+   - *Охват*: только прямые диссертанты или все поколения
+   - *Метрика*: евклидово или косинусное расстояние
+   - *Базис*: прямоугольный (стандартный) или косоугольный (учитывающий иерархическую структуру элементов классификатора)
+3. **Выберите тематический базис**: весь классификатор или конкретные разделы (например, уровни образования или предметные области)
+4. **Запустите анализ** и изучите результаты
+
+---
+
+### 📊 Интерпретация коэффициента силуэта
+
+| Значение | Интерпретация |
+|----------|---------------|
+| **0.71 – 1.00** | Отличное разделение — школы чётко различаются |
+| **0.51 – 0.70** | Хорошее разделение |
+| **0.26 – 0.50** | Умеренное разделение — есть пересечения |
+| **0.00 – 0.25** | Слабое разделение — школы похожи |
+| **< 0.00** | Плохое разделение — у школ общая тематика исследований |
+
+---
+
+### 💡 Рекомендации
+
+- Для **общей картины** используйте весь базис и прямоугольную метрику
+- Для **детального анализа** выберите конкретные разделы классификатора
+- **Косоугольный базис** учитывает иерархию тем и может дать более точные результаты
+- При сравнении **крупных школ** (много поколений) анализ может занять время
+"""
+
+
+# ==============================================================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ==============================================================================
+
+def get_all_supervisors(df: pd.DataFrame) -> List[str]:
+    """Получает список всех научных руководителей из DataFrame."""
+    supervisor_cols = [
+        col for col in df.columns 
+        if "supervisor" in col.lower() and "name" in col.lower()
+    ]
+
+    all_supervisors: Set[str] = set()
+    for col in supervisor_cols:
+        if col in df.columns:
+            all_supervisors.update(
+                str(v).strip() for v in df[col].dropna().unique() 
+                if str(v).strip()
             )
-        else:
-            st.warning("Установите библиотеку openpyxl для экспорта в Excel.")
+
+    return sorted(all_supervisors)
+
+
+def format_node_option(code: str, classifier_dict: Dict[str, str]) -> str:
+    """Форматирует узел для отображения в selectbox."""
+    depth = get_code_depth(code)
+    indent = "  " * (depth - 1)
+    title = classifier_dict.get(code, "")
+    if title:
+        return f"{indent}{code} — {title}"
+    return f"{indent}{code}"
+
+
+def show_instruction_dialog() -> None:
+    """Показывает диалог с инструкцией."""
+    @st.dialog("Инструкция", width="large")
+    def _show():
+        st.markdown(INSTRUCTION_SCHOOL_COMPARISON)
     _show()
 
+
 # ==============================================================================
-# ОСНОВНАЯ ФУНКЦИЯ ВКЛАДКИ
+# ОСНОВНАЯ ФУНКЦИЯ РЕНДЕРИНГА ВКЛАДКИ
 # ==============================================================================
 
-def render_articles_comparison_tab(
+def render_school_comparison_tab(
     df: pd.DataFrame,
     idx: Dict[str, Set[int]],
     lineage_func: Callable,
-    selected_roots: List[str],
-    classifier_labels: Dict[str, str]
-):
-    # Кнопки помощи в верхней части
-    col_help1, col_help2, _ = st.columns([0.2, 0.25, 0.55])
-    with col_help1:
-        if st.button("📖 Инструкция", key="art_help_btn"):
-            show_articles_instruction()
-    with col_help2:
-        if st.button("🗂 Список классификатора", key="art_class_btn"):
-            show_classifier_list()
+    rows_for_func: Callable,
+    scores_folder: str = DEFAULT_SCORES_FOLDER,
+    specific_files: Optional[List[str]] = None,
+    classifier_labels: Optional[Dict[str, str]] = None,
+) -> None:
+    """
+    Отрисовывает вкладку сравнения научных школ.
 
-    st.header("🔬 Сравнение научных школ по публикациям")
+    Args:
+        df: Основной DataFrame с диссертациями
+        idx: Индекс для поиска по именам
+        lineage_func: Функция построения генеалогии
+        rows_for_func: Функция поиска строк
+        scores_folder: Папка с CSV-профилями (настраивается в коде)
+        specific_files: Список конкретных CSV-файлов (None = все из папки)
+        classifier_labels: Словарь {код: название} для подписей узлов
+    """
 
-    # --- ПРОВЕРКИ ---
-    if len(selected_roots) < 2:
-        st.warning("⚠️ Для проведения сравнения необходимо выбрать **минимум двух** руководителей на вкладке «Построение деревьев» и нажать там кнопку «Построить».")
+    if classifier_labels is None:
+        classifier_labels = {}
+
+    # --- Кнопка инструкции ---
+    if st.button("📖 Инструкция", key="instruction_school_comparison"):
+        show_instruction_dialog()
+
+    st.subheader("🔬 Сравнение научных школ по тематическим профилям")
+
+    st.markdown("""
+    Сравните тематические профили диссертаций разных научных школ. 
+    Основная метрика — **коэффициент силуэта**, показывающий степень различия 
+    тематических направлений.
+    """)
+
+    # =========================================================================
+    # ЗАГРУЗКА ДАННЫХ ПРОФИЛЕЙ (настройки в коде, не в UI)
+    # =========================================================================
+
+    try:
+        scores_df = load_scores_from_folder(
+            folder_path=scores_folder,
+            specific_files=specific_files
+        )
+        all_feature_columns = get_feature_columns(scores_df)
+        st.success(
+            f"✅ Загружено {len(scores_df)} профилей, "
+            f"{len(all_feature_columns)} признаков"
+        )
+    except FileNotFoundError as e:
+        st.error(f"❌ Папка или файлы не найдены: {e}")
+        st.info(
+            f"Убедитесь, что папка '{scores_folder}' существует и содержит CSV-файлы "
+            "с тематическими профилями."
+        )
         return
-
-    df_articles = load_articles_data()
-    if df_articles.empty:
-        st.error("❌ База данных статей (`articles_scores.csv`) не найдена или пуста.")
+    except Exception as e:
+        st.error(f"❌ Ошибка загрузки данных: {e}")
         return
-
-    st.success(f"Выбраны для анализа: {', '.join(selected_roots)}")
 
     st.markdown("---")
 
-    # --- НАСТРОЙКИ ПАРАМЕТРОВ ---
-    col_cfg1, col_cfg2 = st.columns(2)
+    # =========================================================================
+    # ВЫБОР НАУЧНЫХ ШКОЛ
+    # =========================================================================
 
-    with col_cfg1:
+    st.markdown("### 👥 Выбор научных школ для сравнения")
+
+    all_supervisors_sorted = get_all_supervisors(df)
+
+    if not all_supervisors_sorted:
+        st.error("❌ В данных не найдено научных руководителей")
+        return
+
+    selected_schools = st.multiselect(
+        "Выберите руководителей научных школ (минимум 2)",
+        options=all_supervisors_sorted,
+        default=[],
+        key="school_comp_selection",
+        help="Выберите 2 или более научных руководителей для сравнения их школ"
+    )
+
+    if len(selected_schools) < 2:
+        st.warning("⚠️ Выберите минимум 2 научных руководителя для сравнения")
+        return
+
+    st.markdown("---")
+
+    # =========================================================================
+    # ПАРАМЕТРЫ АНАЛИЗА
+    # =========================================================================
+
+    col_params1, col_params2 = st.columns(2)
+
+    with col_params1:
         st.markdown("### 📐 Параметры анализа")
-        
-        scope = st.radio(
-            "Охват участников школы:",
-            options=["direct", "all"],
-            format_func=lambda x: "Только прямые ученики (1-й уровень)" if x == "direct" else "Все поколения школы (генеалогия)",
-            key="art_scope_choice"
+
+        # Выбор охвата диссертаций
+        scope_options = list(SCOPE_LABELS.keys())
+        scope_labels_list = [SCOPE_LABELS[s] for s in scope_options]
+        scope_idx = st.radio(
+            "Охват диссертаций",
+            options=range(len(scope_options)),
+            format_func=lambda i: scope_labels_list[i],
+            key="school_comp_scope",
+            help=(
+                "**Прямые диссертанты** — только защитившиеся под непосредственным "
+                "руководством выбранного учёного.\n\n"
+                "**Все поколения** — включая диссертантов диссертантов и далее."
+            )
+        )
+        selected_scope: ComparisonScope = scope_options[scope_idx]
+
+        # Выбор метрики расстояния
+        metric_options = list(DISTANCE_METRIC_LABELS.keys())
+        metric_labels_list = [DISTANCE_METRIC_LABELS[m] for m in metric_options]
+        metric_idx = st.selectbox(
+            "Метрика расстояния",
+            options=range(len(metric_options)),
+            format_func=lambda i: metric_labels_list[i],
+            key="school_comp_metric",
+            help=(
+                "**Прямоугольный базис** — стандартное вычисление расстояний.\n\n"
+                "**Косоугольный базис** — учитывает иерархическую структуру "
+                "тематического классификатора."
+            )
+        )
+        selected_metric: DistanceMetric = metric_options[metric_idx]
+
+    with col_params2:
+        st.markdown("### 🎯 Выбор тематического базиса")
+
+        basis_choice = st.radio(
+            "Базис для сравнения",
+            options=["full", "selected"],
+            format_func=lambda x: "Весь базис (все темы)" if x == "full" else "Конкретные разделы",
+            key="school_comp_basis_choice",
+            help=(
+                "**Весь базис** — используются все тематические признаки.\n\n"
+                "**Конкретные разделы** — выберите узлы классификатора."
+            )
         )
 
-        metric_choice = st.selectbox(
-            "Метрика расстояния:",
-            options=list(DISTANCE_METRIC_LABELS.keys()),
-            format_func=lambda x: DISTANCE_METRIC_LABELS[x],
-            key="art_metric_choice"
-        )
+        selected_nodes: Optional[List[str]] = None
 
-    with col_cfg2:
-        st.markdown("### 🎯 Тематический базис")
-        
-        # Подготовка списка для выбора (Уровни 1, 2, 3 + Год)
-        # Собираем все коды из колонок статей
-        all_cols = df_articles.columns.tolist()
-        codes_in_df = [c for c in all_cols if re.match(r'^[\d\.]+$', c)]
-        
-        # Получаем уникальные узлы уровней 1, 2 и 3
-        selectable_nodes = []
-        for level in [1, 2, 3]:
-            nodes = sorted(set(c.rsplit('.', max(0, get_code_depth(c)-level))[0] for c in codes_in_df if get_code_depth(c) >= level))
-            selectable_nodes.extend(nodes)
-        
-        # Убираем дубли и сортируем
-        selectable_nodes = sorted(list(set(selectable_nodes)))
-        
-        basis_options = ["Все разделы классификатора", "Год"] + selectable_nodes
-        
-        def basis_formatter(x):
-            if x == "Все разделы классификатора": return x
-            if x == "Год": return x
-            label = classifier_labels.get(x, "")
-            indent = " " * (get_code_depth(x) - 1) * 2
-            return f"{indent}{x} {label}"
+        if basis_choice == "selected":
+            selectable = get_selectable_nodes(all_feature_columns, max_level=3)
 
-        selected_basis = st.multiselect(
-            "Выберите разделы для сопоставления:",
-            options=basis_options,
-            default=["Все разделы классификатора"],
-            format_func=basis_formatter,
-            key="art_basis_selection"
-        )
+            if not selectable:
+                st.warning("Нет доступных узлов для выбора")
+            else:
+                level1_nodes = [n for n in selectable if get_code_depth(n) == 1]
+                level2_nodes = [n for n in selectable if get_code_depth(n) == 2]
+                level3_nodes = [n for n in selectable if get_code_depth(n) == 3]
+
+                st.caption("Выберите разделы классификатора:")
+
+                selected_nodes = []
+
+                if level1_nodes:
+                    st.markdown("**Уровень 1:**")
+                    cols_l1 = st.columns(min(4, len(level1_nodes)))
+                    for i, node in enumerate(level1_nodes):
+                        with cols_l1[i % len(cols_l1)]:
+                            label = classifier_labels.get(node, node)
+                            if st.checkbox(f"{node}", key=f"node_l1_{node}"):
+                                selected_nodes.append(node)
+
+                if level2_nodes:
+                    with st.expander("Уровень 2", expanded=False):
+                        cols_l2 = st.columns(3)
+                        for i, node in enumerate(level2_nodes):
+                            with cols_l2[i % 3]:
+                                label = classifier_labels.get(node, "")
+                                display = f"{node}" + (f" ({label})" if label else "")
+                                if st.checkbox(display, key=f"node_l2_{node}"):
+                                    selected_nodes.append(node)
+
+                if level3_nodes:
+                    with st.expander("Уровень 3", expanded=False):
+                        cols_l3 = st.columns(3)
+                        for i, node in enumerate(level3_nodes):
+                            with cols_l3[i % 3]:
+                                label = classifier_labels.get(node, "")
+                                display = f"{node}" + (f" ({label})" if label else "")
+                                if st.checkbox(display, key=f"node_l3_{node}"):
+                                    selected_nodes.append(node)
+
+                if selected_nodes:
+                    filtered_cols = filter_columns_by_nodes(all_feature_columns, selected_nodes)
+                    st.info(
+                        f"✓ Выбрано {len(selected_nodes)} узлов → "
+                        f"{len(filtered_cols)} признаков"
+                    )
+                else:
+                    st.warning("⚠️ Выберите хотя бы один раздел")
 
     # Параметры косоугольного базиса
     decay_factor = 0.5
-    if "oblique" in metric_choice:
-        decay_factor = st.slider("Коэффициент затухания (decay):", 0.1, 0.9, 0.5, 0.1, help="Влияние иерархических связей")
+    if "oblique" in selected_metric:
+        with st.expander("🔧 Параметры косоугольного базиса", expanded=False):
+            decay_factor = st.slider(
+                "Коэффициент затухания",
+                min_value=0.1,
+                max_value=0.9,
+                value=0.5,
+                step=0.1,
+                key="school_comp_decay",
+                help="Сила влияния родительских узлов на дочерние (0.5 — сбалансированно)"
+            )
 
     st.markdown("---")
 
-    # --- ЗАПУСК ---
-    if st.button("🚀 Запустить сравнительный анализ", type="primary"):
-        # Маппинг "Год" обратно в "Year" для логики
-        logic_basis = ["Year" if x == "Год" else x for x in selected_basis]
-        
-        with st.spinner("Сбор данных и расчет метрик..."):
-            dataset, used_features = prepare_articles_dataset(
-                roots=selected_roots,
-                df_lineage=df,
-                idx_lineage=idx,
-                lineage_func=lineage_func,
-                df_articles=df_articles,
-                scope=scope,
-                selected_features_keys=logic_basis
-            )
+    # Проверка готовности
+    ready_to_run = True
+    if basis_choice == "selected" and (not selected_nodes or len(selected_nodes) == 0):
+        ready_to_run = False
 
-            if dataset.empty:
-                st.error("❌ По выбранным критериям статьи не найдены.")
-                return
+    # =========================================================================
+    # ЗАПУСК АНАЛИЗА
+    # =========================================================================
 
-            # Диагностика: сколько статей попало в каждую школу
-            school_counts = dataset["school"].value_counts()
+    if st.button(
+        "🚀 Запустить анализ", 
+        key="school_comp_run", 
+        type="primary",
+        disabled=not ready_to_run
+    ):
 
-            if school_counts.shape[0] < 2:
-                st.error(
-                    "❌ Недостаточно данных для сравнения: статьи найдены только для одной школы. "
-                    "Попробуйте выбрать другой охват (все поколения) или другой набор руководителей."
-                )
-                st.dataframe(school_counts.rename("Количество статей"))
-                return
+        with st.spinner("📥 Сбор данных научных школ..."):
+            datasets: Dict[str, pd.DataFrame] = {}
+            missing_info_all: Dict[str, pd.DataFrame] = {}
+            stats_info = []
 
-            st.caption("Найдено статей по школам:")
-            st.dataframe(school_counts.rename("Количество статей"))
+            progress_bar = st.progress(0)
 
-            # Проведение вычислений
-            results = compute_article_analysis(dataset, used_features, metric_choice, decay_factor)
-
-            # --- ВЫВОД РЕЗУЛЬТАТОВ ---
-            st.subheader("📊 Результаты сравнительного анализа")
-            
-            # Метрики в колонках
-            m1, m2, m3 = st.columns(3)
-            
-            with m1:
-                st.metric("Коэффициент силуэта", f"{results['silhouette_avg']:.3f}")
-                st.caption("Показывает степень разделения тематических профилей школ (от -1 до 1).")
-            
-            with m2:
-                db = results['davies_bouldin']
-                st.metric("Индекс Дэвиса–Боулдина", f"{db:.3f}" if db is not None else "—")
-                st.caption("Оценка плотности и разделения профилей. Меньшие значения соответствуют более чёткому разделению.")
-
-            with m3:
-                ch = results['calinski_harabasz']
-                st.metric("Индекс Калинского–Харабаза", f"{int(ch)}" if ch is not None else "—")
-                st.caption("Оценка дисперсии профилей. Большие значения соответствуют более чёткому разделению.")
-
-            # График
-            st.markdown("### 📈 График силуэта")
-            fig = create_articles_silhouette_plot(
-                sample_scores=results['sample_silhouette_values'],
-                labels=results['labels'],
-                school_order=results['school_order'],
-                overall_score=results['silhouette_avg'],
-                metric_label=DISTANCE_METRIC_LABELS[metric_choice]
-            )
-            st.pyplot(fig)
-
-            # Расстояние между центроидами
-            if len(results['school_order']) == 2:
-                st.info(f"**Евклидово расстояние между центроидами школ:** {results['centroids_dist']:.3f}")
-            elif len(results['school_order']) > 2:
-                with st.expander("Матрица расстояний между центроидами"):
-                    dist_df = pd.DataFrame(
-                        results['centroids_dist'], 
-                        index=results['school_order'], 
-                        columns=results['school_order']
+            for i, school_name in enumerate(selected_schools):
+                try:
+                    dataset, missing_info, total_count = gather_school_dataset(
+                        df=df,
+                        index=idx,
+                        root=school_name,
+                        scores=scores_df,
+                        scope=selected_scope,
+                        lineage_func=lineage_func,
+                        rows_for_func=rows_for_func,
                     )
-                    st.dataframe(dist_df.style.background_gradient(cmap='YlOrRd'))
 
-            # Сводная таблица
-            st.markdown("### 📋 Сводная статистика")
-            summary_df = create_comparison_summary(dataset, used_features)
-            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+                    datasets[school_name] = dataset
+                    if not missing_info.empty:
+                        missing_info_all[school_name] = missing_info
 
-            # Кнопка скачивания таблицы
-            if st.button("📥 Скачать результаты", key="art_dl_btn"):
-                download_articles_results(summary_df, "articles_comparison_stats")
+                    stats_info.append({
+                        "Школа": school_name,
+                        "Найдено диссертаций": total_count,
+                        "С профилями": len(dataset),
+                        "Без профилей": len(missing_info) if not missing_info.empty else 0
+                    })
 
-            # Список статей
-            with st.expander("📄 Список проанализированных статей", expanded=False):
-                view_df = dataset[["Article_id", "school", "Authors", "Title", "Year"]].copy()
-                view_df.columns = ["ID", "Школа", "Авторы", "Заголовок", "Год"]
-                st.dataframe(view_df, use_container_width=True, hide_index=True)
+                except Exception as e:
+                    st.warning(f"⚠️ Ошибка для школы '{school_name}': {e}")
+
+                progress_bar.progress((i + 1) / len(selected_schools))
+
+            progress_bar.empty()
+
+        if stats_info:
+            st.markdown("#### 📊 Статистика сбора данных")
+            stats_df = pd.DataFrame(stats_info)
+            st.dataframe(stats_df, use_container_width=True, hide_index=True)
+
+        valid_datasets = {k: v for k, v in datasets.items() if not v.empty}
+
+        if len(valid_datasets) < 2:
+            st.error(
+                "❌ Недостаточно данных для анализа. "
+                "Нужно минимум 2 школы с тематическими профилями."
+            )
+            return
+
+        with st.spinner("🔬 Вычисление анализа силуэта..."):
+            try:
+                nodes_for_analysis = selected_nodes if basis_choice == "selected" else None
+
+                (
+                    overall_score,
+                    sample_scores,
+                    labels,
+                    school_order,
+                    used_columns
+                ) = compute_silhouette_analysis(
+                    datasets=valid_datasets,
+                    feature_columns=all_feature_columns,
+                    metric=selected_metric,
+                    selected_nodes=nodes_for_analysis,
+                    decay_factor=decay_factor,
+                )
+            except ValueError as e:
+                st.error(f"❌ Ошибка анализа: {e}")
+                return
+            except Exception as e:
+                st.error(f"❌ Неожиданная ошибка: {e}")
+                return
+
+        # =====================================================================
+        # РЕЗУЛЬТАТЫ
+        # =====================================================================
+
+        st.markdown("---")
+        st.markdown("## 📈 Результаты анализа")
+
+        col_score, col_interp = st.columns([1, 2])
+
+        with col_score:
+            st.metric(
+                label="Коэффициент силуэта",
+                value=f"{overall_score:.3f}",
+                help="Диапазон от -1 до 1. Чем выше, тем лучше разделение школ."
+            )
+
+        with col_interp:
+            st.info(interpret_silhouette_score(overall_score))
+
+        basis_info = "весь базис" if basis_choice == "full" else f"узлы: {', '.join(selected_nodes or [])}"
+        st.caption(f"📌 Базис: {basis_info} | Признаков: {len(used_columns)} | Метрика: {DISTANCE_METRIC_LABELS[selected_metric]}")
+
+        # График силуэта
+        st.markdown("### 📊 График силуэта")
+
+        fig = create_silhouette_plot(
+            sample_scores=sample_scores,
+            labels=labels,
+            school_order=school_order,
+            overall_score=overall_score,
+            metric_label=DISTANCE_METRIC_LABELS[selected_metric],
+        )
+
+        st.pyplot(fig)
+        plt.close(fig)
+
+        # Скачивание графика
+        buf = io.BytesIO()
+        fig = create_silhouette_plot(
+            sample_scores=sample_scores,
+            labels=labels,
+            school_order=school_order,
+            overall_score=overall_score,
+            metric_label=DISTANCE_METRIC_LABELS[selected_metric],
+        )
+        fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
+        buf.seek(0)
+        plt.close(fig)
+
+        col_dl1, col_dl2 = st.columns(2)
+        with col_dl1:
+            st.download_button(
+                label="📥 Скачать график (PNG)",
+                data=buf.getvalue(),
+                file_name="silhouette_plot.png",
+                mime="image/png",
+                key="school_comp_download_png"
+            )
+
+        # Сводная таблица
+        st.markdown("### 📋 Сводная статистика по школам")
+
+        summary_df = create_comparison_summary(
+            datasets=valid_datasets,
+            feature_columns=used_columns,
+            school_order=school_order,
+        )
+        st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+        with col_dl2:
+            csv_data = summary_df.to_csv(index=False, encoding="utf-8-sig")
+            st.download_button(
+                label="📥 Скачать сводку (CSV)",
+                data=csv_data.encode("utf-8-sig"),
+                file_name="school_comparison_summary.csv",
+                mime="text/csv",
+                key="school_comp_download_csv"
+            )
+
+        # Детали
+        with st.expander(f"📝 Использовано признаков: {len(used_columns)}", expanded=False):
+            by_level: Dict[int, List[str]] = {}
+            for col in used_columns:
+                level = get_code_depth(col)
+                by_level.setdefault(level, []).append(col)
+
+            for level in sorted(by_level.keys()):
+                cols = by_level[level]
+                st.markdown(f"**Уровень {level}** ({len(cols)} признаков)")
+                display_cols = []
+                for c in sorted(cols)[:30]:
+                    label = classifier_labels.get(c, "")
+                    display_cols.append(f"{c}" + (f" ({label})" if label else ""))
+                st.code(", ".join(display_cols) + ("..." if len(cols) > 30 else ""))
+
+        if missing_info_all:
+            with st.expander("⚠️ Диссертации без профилей", expanded=False):
+                for school_name, missing_df in missing_info_all.items():
+                    st.markdown(f"**{school_name}**: {len(missing_df)} диссертаций")
+                    if not missing_df.empty and len(missing_df) <= 20:
+                        st.dataframe(missing_df, use_container_width=True, hide_index=True)
+                    elif len(missing_df) > 20:
+                        st.dataframe(missing_df.head(10), use_container_width=True, hide_index=True)
+                        st.caption(f"... и ещё {len(missing_df) - 10}")
