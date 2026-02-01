@@ -1688,8 +1688,7 @@ with tab_articles_comparison:
         df_lineage=df,
         idx_lineage=idx,
         lineage_func=lineage,
-        selected_roots=roots, # Это список имен, выбранных на первой вкладке
-        classifier_labels=classifier_labels_dict
+        selected_roots=roots
     )
     
 #with tab_schoolcomparison_new:
