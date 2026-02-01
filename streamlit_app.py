@@ -1654,16 +1654,18 @@ with tab_dissertations:
                 if st.button("📥 Скачать результаты", key="diss_show_download"):
                     download_data_dialog(result_df[display_columns], "dissertations_search", "diss")
 
-
 with tab_profiles:
     render_profiles_tab(
         df=df,
+        idx=idx,
+        lineage_func=lineage,
+        rows_for_func=rows_for, 
         thematic_classifier=THEMATIC_CLASSIFIER,
         scores_folder=BASIC_SCORES_DIR,
-        specific_files=None  # или укажите конкретные файлы, если нужно
+        specific_files=None
     )
 
-                        
+
 with tab_schoolcomparison:
     # Словарь {код: название} из THEMATIC_CLASSIFIER
     classifier_labels = {code: title for code, title, _ in THEMATIC_CLASSIFIER}
