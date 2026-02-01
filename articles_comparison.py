@@ -2,6 +2,10 @@
 """
 Модуль сравнения научных школ по публикациям (статьям).
 Реализует логику, аналогичную school_comparison, но адаптированную под структуру статей.
+
+ОБНОВЛЕНИЯ:
+- Загрузка классификатора статей из articles_classifier.json
+- Поддержка всех уровней иерархии классификатора
 """
 
 from __future__ import annotations
@@ -38,7 +42,6 @@ METADATA_COLS = {
     "Volume", "Issue", "school", "Year", "Year_num"
 }
 
-# Типы метрик расстояния
 DistanceMetric = Literal[
     "euclidean_orthogonal",
     "cosine_orthogonal",
@@ -53,16 +56,14 @@ DISTANCE_METRIC_LABELS: Dict[DistanceMetric, str] = {
     "cosine_oblique": "Косинусное (косоугольный базис)",
 }
 
-# Палитра
 SILHOUETTE_COLORS = ["#FF8C42", "#FFD166", "#F77F00", "#FCBF49", "#EF476F", "#06D6A0", "#118AB2", "#073B4C"]
 
-# Пути к файлу классификатора
+# Пути к файлу классификатора ДЛЯ СТАТЕЙ
 CLASSIFIER_PATHS = [
     "articles_classifier.json",
     "db_articles/articles_classifier.json",
 ]
 
-# Текст инструкции
 ARTICLES_HELP_TEXT = """
 ### 🔬 Анализ публикационной активности научных школ
 
@@ -73,7 +74,10 @@ ARTICLES_HELP_TEXT = """
 
 1. **Выбор охвата**: Можно анализировать только прямых учеников или всю школу целиком.
 
-2. **Гибкий базис**: Можно сравнивать школы по всему классификатору, по конкретным разделам или добавить фактор времени ("Год").
+2. **Гибкий базис**: 
+   - **Весь базис** — анализ по всем тематическим кодам классификатора
+   - **Отдельные узлы** — выбор конкретных разделов (при выборе узла включаются все его подузлы)
+   - **Год** — добавление временного фактора
 
 3. **Метрики**:
    - *Прямоугольный базис*: Стандартное сравнение, где все темы равноправны.
@@ -86,7 +90,6 @@ ARTICLES_HELP_TEXT = """
 - **Индекс Калинского–Харабаза**: Оценивает дисперсию (больше — лучше сформированы кластеры).
 """
 
-# Заполнитель для списка классификатора (будет подгружаться из JSON)
 CLASSIFIER_LIST_TEXT = """
 Классификатор загружается из `articles_classifier.json`.
 """
@@ -106,7 +109,6 @@ def load_articles_classifier() -> Dict[str, str]:
             except Exception as e:
                 print(f"Ошибка загрузки классификатора из {path}: {e}")
                 continue
-    # Если файл не найден, возвращаем пустой словарь
     print("⚠️ Файл articles_classifier.json не найден, классификатор будет пустым")
     return {}
 
@@ -153,7 +155,7 @@ def build_oblique_transform_matrix(feature_columns: List[str], decay_factor: flo
 
     for i, col in enumerate(feature_columns):
         if col == "Year_num":
-            continue  # Год не имеет иерархии в классификаторе
+            continue
         ancestors = get_ancestor_codes(col)
         for depth, ancestor in enumerate(ancestors[:-1]):
             if ancestor in col_to_idx:
@@ -273,7 +275,6 @@ def compute_article_analysis(
 ) -> Dict[str, Any]:
     """
     Полный цикл анализа: вычисление матрицы расстояний и метрик.
-    Возвращает метрики и данные для визуализаций.
     """
     if df.empty or not feature_columns:
         return {}
@@ -295,10 +296,8 @@ def compute_article_analysis(
             "centroids_dist": None
         }
 
-    # 1) Матрица расстояний
     dist_matrix = compute_distance_matrix(X, feature_columns, metric, decay_factor)
 
-    # 2) Силуэт (precomputed)
     try:
         silhouette_avg = silhouette_score(dist_matrix, labels, metric="precomputed")
         sample_silhouette_values = silhouette_samples(dist_matrix, labels, metric="precomputed")
@@ -306,7 +305,6 @@ def compute_article_analysis(
         silhouette_avg = 0.0
         sample_silhouette_values = np.zeros(X.shape[0])
 
-    # 3) DB/CH считаются в векторном пространстве
     if "oblique" in metric:
         X_for_metrics = apply_oblique_transform(X, feature_columns, decay_factor)
     else:
@@ -322,7 +320,6 @@ def compute_article_analysis(
     except Exception:
         ch_score = None
 
-    # 4) Центроиды и расстояния между ними
     try:
         centroids = [X_for_metrics[labels == lab].mean(axis=0) for lab in unique_labels]
         centroid_dist_matrix = cdist(centroids, centroids, metric="euclidean")
