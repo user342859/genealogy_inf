@@ -3,6 +3,8 @@
 
 Реализует классическую энтропию Шеннона и модифицированную версию
 с учетом иерархического коэффициента Z.
+
+Версия с улучшенной обработкой типов и диагностикой.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
+import math
 
 
 # ==============================================================================
@@ -42,13 +45,11 @@ def calculate_entropy_shannon(
     # Нормализуем (получаем вероятности)
     probabilities = filtered / filtered.sum()
 
-    # ИСПРАВЛЕНИЕ: конвертируем в numpy array перед log2
-    probs_array = probabilities.values
-
-    # Рассчитываем энтропию
-    # Используем where для избежания log2(0)
-    log_probs = np.where(probs_array > 0, np.log2(probs_array), 0)
-    entropy = -np.sum(probs_array * log_probs)
+    # Рассчитываем энтропию напрямую через Python math (избегаем numpy)
+    entropy = 0.0
+    for prob in probabilities:
+        if prob > 0:
+            entropy -= float(prob) * math.log2(float(prob))
 
     return float(entropy)
 
@@ -81,19 +82,14 @@ def calculate_entropy_hierarchical(
     # Нормализуем
     probabilities = filtered / filtered.sum()
 
-    # ИСПРАВЛЕНИЕ: конвертируем в numpy array
-    probs_array = probabilities.values
     codes = probabilities.index.tolist()
 
-    # Рассчитываем коэффициенты Z для каждого кода
-    z_coefficients = np.array([
-        calculate_z_coefficient(code, classifier_hierarchy)
-        for code in codes
-    ])
-
-    # Рассчитываем энтропию с коэффициентами Z
-    log_probs = np.where(probs_array > 0, np.log2(probs_array), 0)
-    entropy = -np.sum(z_coefficients * probs_array * log_probs)
+    # Рассчитываем энтропию напрямую через Python math
+    entropy = 0.0
+    for code, prob in zip(codes, probabilities):
+        if prob > 0:
+            z = calculate_z_coefficient(code, classifier_hierarchy)
+            entropy -= z * float(prob) * math.log2(float(prob))
 
     return float(entropy)
 
@@ -133,9 +129,9 @@ def calculate_z_coefficient(
         siblings_count = count_children(parent, classifier_hierarchy)
 
         if siblings_count > 1:
-            z *= 1.0 / np.log2(siblings_count)
+            z *= 1.0 / math.log2(float(siblings_count))
 
-    return z
+    return float(z)
 
 
 def count_children(parent_code: str, classifier_hierarchy: Dict[str, List[str]]) -> int:
@@ -265,27 +261,47 @@ def search_by_entropy(
         code = str(row["Code"])
 
         # Извлекаем профиль (только нужные колонки)
-        profile = row[feature_columns]
+        # Создаем Series с числовыми значениями
+        profile_dict = {}
+        for col in feature_columns:
+            try:
+                val = row[col]
+                if pd.isna(val):
+                    profile_dict[col] = 0.0
+                else:
+                    profile_dict[col] = float(val)
+            except (ValueError, TypeError):
+                profile_dict[col] = 0.0
+
+        profile = pd.Series(profile_dict)
 
         # Рассчитываем энтропию
-        if use_hierarchical and hierarchy:
-            entropy = calculate_entropy_hierarchical(
-                profile,
-                hierarchy,
-                min_threshold
-            )
-        else:
-            entropy = calculate_entropy_shannon(
-                profile,
-                min_threshold
-            )
+        try:
+            if use_hierarchical and hierarchy:
+                entropy = calculate_entropy_hierarchical(
+                    profile,
+                    hierarchy,
+                    min_threshold
+                )
+            else:
+                entropy = calculate_entropy_shannon(
+                    profile,
+                    min_threshold
+                )
+        except Exception as e:
+            # Если произошла ошибка, записываем диагностику и пропускаем
+            print(f"⚠️ Ошибка при расчете энтропии для {code}: {type(e).__name__}: {e}")
+            entropy = 0.0
 
         # Подсчитываем количество значимых тем
-        features_count = int((profile >= min_threshold).sum())
+        try:
+            features_count = int(sum(1 for v in profile.values if v >= min_threshold))
+        except Exception:
+            features_count = 0
 
         results.append({
             "Code": code,
-            "entropy": entropy,
+            "entropy": float(entropy),
             "features_count": features_count
         })
 
@@ -293,6 +309,7 @@ def search_by_entropy(
     results_df = pd.DataFrame(results)
 
     # Сортируем по энтропии
-    results_df = results_df.sort_values(by="entropy", ascending=ascending)
+    if not results_df.empty:
+        results_df = results_df.sort_values(by="entropy", ascending=ascending)
 
     return results_df
