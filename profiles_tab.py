@@ -486,6 +486,7 @@ def render_profiles_tab(
     thematic_classifier: List[Tuple[str, str, bool]],
     scores_folder: str = DEFAULT_SCORES_FOLDER,
     specific_files: Optional[List[str]] = None,
+    supervisor_columns: Optional[List[str]] = None,
 ) -> None:
     """
     Отрисовывает вкладку поиска по тематическим профилям с двумя режимами.
@@ -498,7 +499,11 @@ def render_profiles_tab(
         thematic_classifier: Список элементов классификатора (код, название, disabled)
         scores_folder: Папка с CSV-профилями
         specific_files: Список конкретных CSV-файлов (None = все из папки)
+        supervisor_columns: Список колонок с руководителями
     """
+
+    if supervisor_columns is None:
+        supervisor_columns = ["supervisors_1.name", "supervisors_2.name"]
 
     # Создаем словарь классификатора
     classifier_dict = {code: title for code, title, _ in thematic_classifier}
@@ -573,4 +578,5 @@ def render_profiles_tab(
             specific_files=specific_files,
             classifier_labels=classifier_dict,
             thematic_classifier=thematic_classifier,
+            supervisor_columns=supervisor_columns,
         )
