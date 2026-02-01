@@ -1,274 +1,298 @@
 """
-Модуль расчета меры общности/специфичности тематических профилей.
+Модуль для расчета энтропии Шеннона тематических профилей диссертаций.
 
-Реализует классическую формулу Шеннона и модифицированную с иерархическим
-коэффициентом Z для учета структуры тематического классификатора.
+Реализует классическую энтропию Шеннона и модифицированную версию
+с учетом иерархического коэффициента Z.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 
 
-def get_code_depth(code: str) -> int:
-    """Возвращает глубину (уровень) кода в иерархии."""
-    if not code:
-        return 0
-    return code.count(".") + 1
-
-
-def get_parent_code(code: str) -> Optional[str]:
-    """Возвращает родительский код или None для корневых."""
-    if "." not in code:
-        return None
-    return code.rsplit(".", 1)[0]
-
-
-def get_ancestor_codes(code: str) -> List[str]:
-    """Возвращает список всех предков кода (от корня к текущему, исключая сам код)."""
-    ancestors = []
-    current = get_parent_code(code)
-    while current:
-        ancestors.insert(0, current)
-        current = get_parent_code(current)
-    return ancestors
-
-
-def count_children(code: str, all_codes: List[str]) -> int:
-    """
-    Подсчитывает количество прямых потомков данного узла.
-
-    Args:
-        code: Код узла
-        all_codes: Список всех кодов в классификаторе
-
-    Returns:
-        Количество прямых дочерних узлов
-    """
-    prefix = code + "."
-    depth = get_code_depth(code)
-    children = [
-        c for c in all_codes 
-        if c.startswith(prefix) and get_code_depth(c) == depth + 1
-    ]
-    return len(children)
-
-
-def calculate_z_coefficient(
-    code: str,
-    all_codes: List[str]
-) -> float:
-    """
-    Вычисляет иерархический коэффициент Z для заданного узла.
-
-    Z_i = произведение по ancestors(i) от 1/log(k_d),
-    где k_d - количество дочерних ветвей у предка d.
-
-    Args:
-        code: Код узла классификатора
-        all_codes: Список всех кодов в классификаторе
-
-    Returns:
-        Значение коэффициента Z
-    """
-    ancestors = get_ancestor_codes(code)
-
-    if not ancestors:
-        # Узел первого уровня - нет предков
-        return 1.0
-
-    z = 1.0
-    for ancestor in ancestors:
-        k_d = count_children(ancestor, all_codes)
-        if k_d > 1:
-            # log с основанием 2 для информационной меры
-            z *= 1.0 / np.log2(k_d)
-        # Если k_d <= 1, то 1/log(k_d) не определено или 1, пропускаем
-
-    return z
-
+# ==============================================================================
+# РАСЧЕТ ЭНТРОПИИ ШЕННОНА
+# ==============================================================================
 
 def calculate_entropy_shannon(
     profile: pd.Series,
     min_threshold: float = 0.0
 ) -> float:
     """
-    Вычисляет классическую энтропию Шеннона.
+    Рассчитывает классическую энтропию Шеннона для тематического профиля.
 
-    H = -сумма p_i * log(p_i)
+    Формула: H = -∑ p_i · log₂(p_i)
+    где p_i = балл_i / сумма_баллов (нормализованное значение)
 
     Args:
-        profile: Тематический профиль (баллы по кодам классификатора)
-        min_threshold: Минимальный порог - значения ниже приводятся к нулю
+        profile: Series с баллами по темам (индекс = коды тем, значения = баллы)
+        min_threshold: Минимальный порог для учета темы
 
     Returns:
-        Значение энтропии
+        Значение энтропии (float)
     """
-    # Применяем порог
-    values = profile.copy()
-    values[values < min_threshold] = 0.0
+    # Фильтруем по порогу
+    filtered = profile[profile >= min_threshold]
 
-    # Убираем нулевые значения
-    values = values[values > 0]
-
-    if len(values) == 0:
+    if filtered.empty or filtered.sum() == 0:
         return 0.0
 
-    # Нормализуем на сумму (получаем вероятности)
-    total = values.sum()
-    if total == 0:
-        return 0.0
+    # Нормализуем (получаем вероятности)
+    probabilities = filtered / filtered.sum()
 
-    probabilities = values / total
+    # ИСПРАВЛЕНИЕ: конвертируем в numpy array перед log2
+    probs_array = probabilities.values
 
-    # Вычисляем энтропию
-    entropy = -np.sum(probabilities * np.log2(probabilities))
+    # Рассчитываем энтропию
+    # Используем where для избежания log2(0)
+    log_probs = np.where(probs_array > 0, np.log2(probs_array), 0)
+    entropy = -np.sum(probs_array * log_probs)
 
-    return entropy
+    return float(entropy)
 
 
 def calculate_entropy_hierarchical(
     profile: pd.Series,
-    all_codes: List[str],
+    classifier_hierarchy: Dict[str, List[str]],
     min_threshold: float = 0.0
 ) -> float:
     """
-    Вычисляет модифицированную энтропию с учетом иерархического коэффициента Z.
+    Рассчитывает модифицированную энтропию с иерархическим коэффициентом Z.
 
-    H = -сумма Z_i * p_i * log(p_i)
-
-    Args:
-        profile: Тематический профиль (баллы по кодам классификатора)
-        all_codes: Список всех кодов в классификаторе
-        min_threshold: Минимальный порог - значения ниже приводятся к нулю
-
-    Returns:
-        Значение модифицированной энтропии
-    """
-    # Применяем порог
-    values = profile.copy()
-    values[values < min_threshold] = 0.0
-
-    # Убираем нулевые значения
-    values = values[values > 0]
-
-    if len(values) == 0:
-        return 0.0
-
-    # Нормализуем на сумму (получаем вероятности)
-    total = values.sum()
-    if total == 0:
-        return 0.0
-
-    probabilities = values / total
-
-    # Вычисляем коэффициенты Z для каждого кода
-    z_coefficients = {}
-    for code in probabilities.index:
-        z_coefficients[code] = calculate_z_coefficient(code, all_codes)
-
-    # Вычисляем модифицированную энтропию
-    entropy = 0.0
-    for code, p_i in probabilities.items():
-        z_i = z_coefficients.get(code, 1.0)
-        entropy -= z_i * p_i * np.log2(p_i)
-
-    return entropy
-
-
-def search_by_entropy(
-    scores_df: pd.DataFrame,
-    feature_columns: List[str],
-    use_hierarchical: bool = False,
-    min_threshold: float = 3.0,
-    ascending: bool = True
-) -> pd.DataFrame:
-    """
-    Ищет диссертации по мере общности/специфичности (энтропия).
+    Формула: H = -∑ Z_i · p_i · log₂(p_i)
+    где Z_i учитывает положение темы в иерархии классификатора
 
     Args:
-        scores_df: DataFrame с тематическими профилями
-        feature_columns: Список колонок с признаками (коды классификатора)
-        use_hierarchical: Использовать ли иерархический коэффициент Z
-        min_threshold: Минимальный порог для отсечения малых значений
-        ascending: True - от низкой энтропии к высокой (узкие → широкие темы),
-                   False - наоборот
+        profile: Series с баллами по темам
+        classifier_hierarchy: Словарь {код: список родительских кодов}
+        min_threshold: Минимальный порог для учета темы
 
     Returns:
-        DataFrame с результатами, отсортированный по энтропии
+        Значение энтропии (float)
     """
-    if scores_df.empty:
-        return scores_df
+    # Фильтруем по порогу
+    filtered = profile[profile >= min_threshold]
 
-    # Проверяем наличие колонок
-    available_cols = [c for c in feature_columns if c in scores_df.columns]
-    if not available_cols:
-        raise ValueError("Нет доступных колонок для анализа")
+    if filtered.empty or filtered.sum() == 0:
+        return 0.0
 
-    # Копируем данные
-    result_df = scores_df.copy()
+    # Нормализуем
+    probabilities = filtered / filtered.sum()
 
-    # Вычисляем энтропию для каждой строки
-    entropies = []
-    for idx, row in result_df.iterrows():
-        profile = row[available_cols]
+    # ИСПРАВЛЕНИЕ: конвертируем в numpy array
+    probs_array = probabilities.values
+    codes = probabilities.index.tolist()
 
-        if use_hierarchical:
-            entropy = calculate_entropy_hierarchical(
-                profile, 
-                available_cols, 
-                min_threshold
-            )
-        else:
-            entropy = calculate_entropy_shannon(
-                profile, 
-                min_threshold
-            )
+    # Рассчитываем коэффициенты Z для каждого кода
+    z_coefficients = np.array([
+        calculate_z_coefficient(code, classifier_hierarchy)
+        for code in codes
+    ])
 
-        entropies.append(entropy)
+    # Рассчитываем энтропию с коэффициентами Z
+    log_probs = np.where(probs_array > 0, np.log2(probs_array), 0)
+    entropy = -np.sum(z_coefficients * probs_array * log_probs)
 
-    # Добавляем энтропию в результат
-    result_df["entropy"] = entropies
-
-    # Подсчитываем количество ненулевых признаков (после порога)
-    def count_nonzero_after_threshold(row):
-        vals = row[available_cols]
-        return (vals >= min_threshold).sum()
-
-    result_df["features_count"] = result_df.apply(
-        count_nonzero_after_threshold, 
-        axis=1
-    )
-
-    # Сортируем по энтропии
-    result_df = result_df.sort_values("entropy", ascending=ascending)
-
-    return result_df
+    return float(entropy)
 
 
-def interpret_entropy(
-    entropy: float,
-    use_hierarchical: bool = False
-) -> str:
+def calculate_z_coefficient(
+    code: str,
+    classifier_hierarchy: Dict[str, List[str]]
+) -> float:
+    """
+    Рассчитывает иерархический коэффициент Z для кода классификатора.
+
+    Z учитывает глубину кода в иерархии:
+    - Более глубокие (специфичные) коды получают меньший коэффициент
+    - Это увеличивает их вклад в общую энтропию
+
+    Формула: Z_i = ∏ (1 / log₂(k_d))
+    где k_d = количество дочерних узлов у предка d
+
+    Args:
+        code: Код темы в классификаторе
+        classifier_hierarchy: Словарь {код: список родительских кодов}
+
+    Returns:
+        Коэффициент Z (float)
+    """
+    if code not in classifier_hierarchy:
+        return 1.0
+
+    parents = classifier_hierarchy.get(code, [])
+
+    if not parents:
+        return 1.0
+
+    z = 1.0
+    for parent in parents:
+        # Количество дочерних узлов родителя
+        siblings_count = count_children(parent, classifier_hierarchy)
+
+        if siblings_count > 1:
+            z *= 1.0 / np.log2(siblings_count)
+
+    return z
+
+
+def count_children(parent_code: str, classifier_hierarchy: Dict[str, List[str]]) -> int:
+    """
+    Подсчитывает количество непосредственных дочерних узлов.
+
+    Args:
+        parent_code: Код родительского узла
+        classifier_hierarchy: Словарь иерархии
+
+    Returns:
+        Количество дочерних узлов
+    """
+    count = 0
+    for code, parents in classifier_hierarchy.items():
+        if parents and parents[-1] == parent_code:
+            count += 1
+
+    return max(count, 2)  # Минимум 2 для избежания деления на 0
+
+
+# ==============================================================================
+# ПОСТРОЕНИЕ ИЕРАРХИИ ИЗ КОДОВ
+# ==============================================================================
+
+def build_hierarchy_from_codes(codes: List[str]) -> Dict[str, List[str]]:
+    """
+    Строит иерархию классификатора из списка кодов.
+
+    Для каждого кода определяет список его предков на основе структуры кода.
+    Например, для "1.1.2.3" предками будут ["1", "1.1", "1.1.2"]
+
+    Args:
+        codes: Список кодов классификатора
+
+    Returns:
+        Словарь {код: [список предков]}
+    """
+    hierarchy = {}
+
+    for code in codes:
+        parents = []
+        parts = code.split(".")
+
+        # Строим список предков
+        for i in range(1, len(parts)):
+            parent = ".".join(parts[:i])
+            parents.append(parent)
+
+        hierarchy[code] = parents
+
+    return hierarchy
+
+
+def get_code_depth(code: str) -> int:
+    """
+    Возвращает глубину кода в иерархии (количество уровней).
+
+    Args:
+        code: Код классификатора
+
+    Returns:
+        Глубина (количество точек + 1)
+    """
+    return code.count(".") + 1 if code else 0
+
+
+# ==============================================================================
+# ИНТЕРПРЕТАЦИЯ ЭНТРОПИИ
+# ==============================================================================
+
+def interpret_entropy(entropy: float, hierarchical: bool = False) -> str:
     """
     Возвращает текстовую интерпретацию значения энтропии.
 
     Args:
         entropy: Значение энтропии
-        use_hierarchical: Была ли использована модификация с коэффициентом Z
+        hierarchical: Была ли использована иерархическая формула
 
     Returns:
         Текстовое описание
     """
     if entropy < 1.0:
-        return "🔹 Очень узкая специализация — исследование сфокусировано на конкретной теме"
+        return "🔹 Очень узкая специализация"
     elif entropy < 2.5:
-        return "🔸 Узкая специализация — тема достаточно конкретна"
+        return "🔸 Узкая специализация"
     elif entropy < 4.0:
-        return "🟡 Умеренная широта — исследование охватывает несколько смежных тем"
+        return "🟡 Умеренная широта"
     elif entropy < 5.5:
-        return "🟠 Широкий охват — исследование затрагивает множество тем"
+        return "🟠 Широкий охват"
     else:
-        return "🔴 Очень широкий охват — междисциплинарное исследование с высокой степенью обобщения"
+        return "🔴 Очень широкий охват"
+
+
+# ==============================================================================
+# ПОИСК ПО ЭНТРОПИИ
+# ==============================================================================
+
+def search_by_entropy(
+    scores_df: pd.DataFrame,
+    feature_columns: List[str],
+    use_hierarchical: bool = False,
+    min_threshold: float = 0.0,
+    ascending: bool = True
+) -> pd.DataFrame:
+    """
+    Выполняет поиск диссертаций по энтропии их тематических профилей.
+
+    Args:
+        scores_df: DataFrame с профилями (Code + колонки с баллами)
+        feature_columns: Список колонок-признаков для анализа
+        use_hierarchical: Использовать ли иерархическую формулу с Z
+        min_threshold: Минимальный порог для учета темы
+        ascending: Сортировка по возрастанию (True) или убыванию (False)
+
+    Returns:
+        DataFrame с результатами (Code, entropy, features_count)
+    """
+    results = []
+
+    # Строим иерархию если нужна
+    hierarchy = None
+    if use_hierarchical:
+        hierarchy = build_hierarchy_from_codes(feature_columns)
+
+    for idx, row in scores_df.iterrows():
+        code = str(row["Code"])
+
+        # Извлекаем профиль (только нужные колонки)
+        profile = row[feature_columns]
+
+        # Рассчитываем энтропию
+        if use_hierarchical and hierarchy:
+            entropy = calculate_entropy_hierarchical(
+                profile,
+                hierarchy,
+                min_threshold
+            )
+        else:
+            entropy = calculate_entropy_shannon(
+                profile,
+                min_threshold
+            )
+
+        # Подсчитываем количество значимых тем
+        features_count = int((profile >= min_threshold).sum())
+
+        results.append({
+            "Code": code,
+            "entropy": entropy,
+            "features_count": features_count
+        })
+
+    # Создаем DataFrame
+    results_df = pd.DataFrame(results)
+
+    # Сортируем по энтропии
+    results_df = results_df.sort_values(by="entropy", ascending=ascending)
+
+    return results_df
