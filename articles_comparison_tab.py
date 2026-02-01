@@ -1,7 +1,11 @@
 """
 articles_comparison_tab.py
 
-Streamlit-вкладка: сравнение научных школ/авторов по публикациям (articles_scores.csv).
+Изменения:
+1. Добавлена опция "Весь базис" для анализа по всем тематическим кодам
+2. В multiselect показываются только коды до 3-го уровня (макс 2 точки)
+3. При выборе узла автоматически включаются все его потомки
+4. Используется правильный классификатор для статей
 """
 
 from __future__ import annotations
@@ -26,7 +30,6 @@ from articles_comparison import (
     get_code_depth,
 )
 
-# optional
 try:
     import openpyxl  # type: ignore
 except Exception:
@@ -36,16 +39,17 @@ except Exception:
 # Константы
 # ------------------------------------------------------------------------------
 AUTHOR_COLUMN = "candidate_name"
+SPECIAL_OPTION_ALL = "🌐 Весь базис"  # Специальная опция для выбора всех кодов
+SPECIAL_OPTION_YEAR = "📅 Год"
 
 # ------------------------------------------------------------------------------
-# Нормализация имен
+# Нормализация имен (без изменений)
 # ------------------------------------------------------------------------------
 _RE_MULTI_SPACE = re.compile(r"\s+")
 _RE_DOTS_SPACES = re.compile(r"\s*\.\s*")
 _RE_INIT_SPACES = re.compile(r"([A-Za-zА-Яа-я])\.\s+([A-Za-zА-Яа-я])\.")
 
 def _canon_initials(name: str) -> str:
-    """Приводит 'Каракозов С. Д.' к единому виду: 'каракозов с.д.'"""
     if not isinstance(name, str):
         return ""
     s = name.strip()
@@ -58,7 +62,6 @@ def _canon_initials(name: str) -> str:
     return s.lower()
 
 def _display_initials(canon_key: str) -> str:
-    """'каракозов с.д.' -> 'Каракозов С.Д.'"""
     if not isinstance(canon_key, str):
         return ""
     s = canon_key.strip()
@@ -71,7 +74,6 @@ def _display_initials(canon_key: str) -> str:
     return f"{surname.title()} {init.upper()}".strip()
 
 def _fio_to_short(full_name: str) -> str:
-    """'Иванов Иван Иванович' -> 'Иванов И.И.'"""
     if not isinstance(full_name, str):
         return ""
     s = full_name.strip()
@@ -90,7 +92,6 @@ def _fio_to_short(full_name: str) -> str:
     return f"{surname} {initials}".strip()
 
 def _is_initials_only_option(label: str) -> bool:
-    """Эвристика: 'Фамилия И.О.' vs 'Фамилия Имя Отчество'."""
     if not isinstance(label, str):
         return False
     s = label.strip()
@@ -101,10 +102,9 @@ def _is_initials_only_option(label: str) -> bool:
     return False
 
 # ------------------------------------------------------------------------------
-# Чтение и подготовка "списка доступных"
+# Работа с базой данных (без изменений)
 # ------------------------------------------------------------------------------
 def _supervisor_columns(df_lineage: pd.DataFrame) -> List[str]:
-    """Колонки руководителей."""
     return [
         col for col in df_lineage.columns
         if "supervisor" in col.lower() and "name" in col.lower()
@@ -112,7 +112,6 @@ def _supervisor_columns(df_lineage: pd.DataFrame) -> List[str]:
 
 @st.cache_data(show_spinner=False)
 def _extract_authors_initials_from_articles() -> Set[str]:
-    """Возвращает множество канонических 'фамилия и.о.' по всем статьям."""
     df_articles = load_articles_data()
     if df_articles is None or df_articles.empty or "Authors" not in df_articles.columns:
         return set()
@@ -126,7 +125,6 @@ def _extract_authors_initials_from_articles() -> Set[str]:
 
 @st.cache_data(show_spinner=False)
 def _build_initials_to_fullnames(df_lineage: pd.DataFrame) -> Dict[str, List[str]]:
-    """Строит индекс: canon('иванов и.и.') -> ['Иванов Иван Иванович', ...]"""
     names: Set[str] = set()
 
     if AUTHOR_COLUMN in df_lineage.columns:
@@ -160,7 +158,6 @@ def _compute_selectable_people(
     df_lineage: pd.DataFrame,
     include_without_descendants: bool,
 ) -> Tuple[List[str], Dict[str, str]]:
-    """Возвращает options и meta для multiselect."""
     authors_in_articles = _extract_authors_initials_from_articles()
     initials_to_full = _build_initials_to_fullnames(df_lineage)
 
@@ -215,44 +212,55 @@ def _compute_selectable_people(
     return options, meta
 
 # ------------------------------------------------------------------------------
-# ИСПРАВЛЕНИЕ: Отбор колонок классификатора по выбранным узлам
+# ОБНОВЛЕНИЕ: Фильтрация признаков с поддержкой "Весь базис"
 # ------------------------------------------------------------------------------
 def _filter_feature_columns(all_feature_cols: List[str], selected_nodes: List[str]) -> List[str]:
     """
-    selected_nodes: список узлов вида ["1.1", "2.3.4", "Год"].
-    Возвращает список колонок-скоров, которые попадают под выбранные узлы.
+    selected_nodes: список узлов + специальные опции ("Весь базис", "Год").
+    Возвращает список колонок для анализа.
 
-    ИСПРАВЛЕНИЕ: При выборе только "Год" должен вернуть ['Year_num'] без тематики.
+    Логика:
+    - "Весь базис" → все тематические коды
+    - "Год" → Year_num
+    - Конкретные узлы → узел + все его потомки
     """
     if not selected_nodes:
-        # Если ничего не выбрано - возвращаем все
         return all_feature_cols
 
-    # Проверяем, выбран ли "Год"
-    include_year = any(n.lower() in ("год", "year", "year_num") for n in selected_nodes)
+    # Проверяем специальные опции
+    include_all_basis = SPECIAL_OPTION_ALL in selected_nodes
+    include_year = SPECIAL_OPTION_YEAR in selected_nodes or any(
+        n.lower() in ("год", "year", "year_num") for n in selected_nodes
+    )
 
-    # Выделим только коды классификатора (цифры и точки)
+    # Если выбран "Весь базис"
+    if include_all_basis:
+        thematic = [c for c in all_feature_cols if c != "Year_num" and re.match(r"^[\d\.]+$", c)]
+        result = thematic
+        if include_year:
+            result.append("Year_num")
+        return result
+
+    # Только год без тематики
     nodes = [n for n in selected_nodes if re.match(r"^[\d\.]+$", n)]
-
-    # ИСПРАВЛЕНИЕ: если nodes пустой (только Year выбран), возвращаем только Year_num
     if not nodes:
         return ["Year_num"] if include_year else []
 
-    # Собираем тематические колонки
+    # Собираем коды узлов и их потомков
     picked: Set[str] = set()
     for col in all_feature_cols:
         if col == "Year_num":
-            continue  # Год обрабатывается отдельно
+            continue
         if not re.match(r"^[\d\.]+$", col):
             continue
         for n in nodes:
+            # Если col == node или col начинается с node.
             if col == n or col.startswith(n + "."):
                 picked.add(col)
                 break
 
     result = sorted(picked)
 
-    # Добавляем год если выбран
     if include_year:
         result.append("Year_num")
 
@@ -267,10 +275,9 @@ def _format_node_option(code: str, classifier_dict: Dict[str, str]) -> str:
     return f"{indent}{code}"
 
 # ------------------------------------------------------------------------------
-# Экспорт
+# Экспорт (без изменений)
 # ------------------------------------------------------------------------------
 def _download_dataframe(df: pd.DataFrame, filename_stem: str) -> None:
-    """Простой экспорт: Excel при наличии openpyxl, иначе CSV."""
     if df is None or df.empty:
         st.warning("Нет данных для выгрузки.")
         return
@@ -297,7 +304,7 @@ def _download_dataframe(df: pd.DataFrame, filename_stem: str) -> None:
         )
 
 # ------------------------------------------------------------------------------
-# Диалоги
+# Диалоги (без изменений)
 # ------------------------------------------------------------------------------
 def _show_articles_instruction() -> None:
     @st.dialog("📖 Инструкция: Сравнение по статьям", width="large")
@@ -308,7 +315,6 @@ def _show_articles_instruction() -> None:
 def _show_classifier_list() -> None:
     @st.dialog("🧭 Список тематического классификатора", width="large")
     def _dlg():
-        # Загружаем и отображаем классификатор для статей
         classifier = load_articles_classifier()
         if classifier:
             md_text = "### Классификатор для статей\n\n"
@@ -322,10 +328,6 @@ def _show_classifier_list() -> None:
     _dlg()
 
 def _show_disambiguation_dialog(ambiguous: Dict[str, List[str]]) -> None:
-    """
-    ambiguous: canon_initials -> list(full_fio)
-    Запишет выбор в st.session_state["ac_disambiguation"].
-    """
     @st.dialog("⚠️ Уточнение соответствия автора (инициалы → полное ФИО)", width="large")
     def _dlg():
         st.markdown(
@@ -365,7 +367,7 @@ def _show_disambiguation_dialog(ambiguous: Dict[str, List[str]]) -> None:
     _dlg()
 
 # ------------------------------------------------------------------------------
-# Построение датасета для анализа
+# Построение датасета (без изменений)
 # ------------------------------------------------------------------------------
 def _build_articles_dataset(
     selected_options: List[str],
@@ -376,7 +378,6 @@ def _build_articles_dataset(
     df_articles: pd.DataFrame,
     scope: str,
 ) -> pd.DataFrame:
-    """Возвращает датасет со статьями."""
     if df_articles is None or df_articles.empty:
         return pd.DataFrame()
 
@@ -457,7 +458,7 @@ def _build_articles_dataset(
     return out
 
 # ------------------------------------------------------------------------------
-# Основной рендер
+# ОБНОВЛЕНИЕ: Основной рендер с опцией "Весь базис"
 # ------------------------------------------------------------------------------
 def render_articles_comparison_tab(
     df_lineage: pd.DataFrame,
@@ -469,13 +470,16 @@ def render_articles_comparison_tab(
     """
     Отрисовывает вкладку сравнения по статьям.
 
-    ИЗМЕНЕНИЕ: classifier_labels теперь загружается из articles_classifier.json
+    ИЗМЕНЕНИЯ:
+    - Загружается классификатор для статей (articles_classifier.json)
+    - Добавлена опция "Весь базис" для анализа по всем тематическим кодам
+    - В multiselect показываются только коды до 3-го уровня (макс 2 точки)
     """
-    # ИСПРАВЛЕНИЕ: Загружаем классификатор статей вместо диссертационного
+    # Загружаем правильный классификатор для статей
     if classifier_labels is None:
         classifier_labels = load_articles_classifier()
 
-    # Пролог / кнопки помощи
+    # Пролог
     top_left, top_right = st.columns([1, 1])
     with top_left:
         st.markdown("### 🔬 Сравнение по статьям")
@@ -488,7 +492,7 @@ def render_articles_comparison_tab(
             if st.button("🧭 Классификатор", key="ac_classifier_btn"):
                 _show_classifier_list()
 
-    # Автономный выбор школ/авторов
+    # Выбор школ
     st.markdown("---")
     st.markdown("### 👥 Выбор научных школ для сравнения")
 
@@ -509,7 +513,6 @@ def render_articles_comparison_tab(
         st.error("❌ Не удалось сформировать список доступных руководителей/авторов для сравнения.")
         return
 
-    # initial default
     if "ac_selected_options" not in st.session_state:
         st.session_state["ac_selected_options"] = []
         if selected_roots:
@@ -568,21 +571,36 @@ def render_articles_comparison_tab(
     with col_params2:
         st.markdown("### 🎯 Тематический базис")
 
-        # ИСПРАВЛЕНИЕ: Фильтруем только коды 1-3 уровней (максимум 2 точки)
-        codes = sorted(
+        # ОБНОВЛЕНИЕ: Фильтруем только коды до 3-го уровня (максимум 2 точки)
+        codes_for_display = sorted(
             [c for c in classifier_labels.keys() if re.match(r"^[\d\.]+$", c) and c.count('.') <= 2],
             key=lambda x: (get_code_depth(x), x),
         )
 
-        special_year = "Год"
-        node_options = [special_year, *codes]
+        # Добавляем специальные опции в начало
+        node_options = [SPECIAL_OPTION_ALL, SPECIAL_OPTION_YEAR, *codes_for_display]
+
+        # Форматирование опций для отображения
+        def format_option(x):
+            if x == SPECIAL_OPTION_ALL:
+                return x
+            if x == SPECIAL_OPTION_YEAR:
+                return x
+            return _format_node_option(x, classifier_labels)
 
         selected_nodes = st.multiselect(
             "Выберите разделы для сопоставления",
             options=node_options,
-            default=[special_year],
-            format_func=lambda x: x if x == special_year else _format_node_option(x, classifier_labels),
+            default=[SPECIAL_OPTION_YEAR],
+            format_func=format_option,
             key="ac_selected_nodes",
+            help=(
+                f"**{SPECIAL_OPTION_ALL}** — анализировать по всем тематическим кодам классификатора\n\n"
+                f"**{SPECIAL_OPTION_YEAR}** — добавить временной фактор\n\n"
+                "Выберите конкретные узлы классификатора или их комбинацию. "
+                "При выборе узла автоматически включаются все его подузлы. "
+                "Например, выбрав '1.1 Образовательная среда', вы включите все коды 1.1.1, 1.1.1.1, 1.1.1.2 и т.д."
+            ),
         )
 
         run_clicked = st.button("🚀 Запустить сравнительный анализ", type="primary", key="ac_run_btn")
@@ -651,25 +669,43 @@ def render_articles_comparison_tab(
         with st.expander("🔎 Диагностика: сколько статей попало в каждую школу", expanded=False):
             st.write(school_counts)
 
-        # Признаки
+        # Подготовка признаков
         meta_cols = {"Article_id", "Authors", "Title", "Journal", "Volume", "Issue", "school", "Year", "Year_num"}
         all_cols = dataset.columns.tolist()
         classifier_cols = [c for c in all_cols if c not in meta_cols and re.match(r"^[\d\.]+$", str(c))]
         all_feature_cols = [*classifier_cols, "Year_num"]
 
-        # ИСПРАВЛЕНИЕ: Используем исправленную функцию фильтрации
+        # ОБНОВЛЕНИЕ: Используем обновленную функцию фильтрации с поддержкой "Весь базис"
         if selected_nodes:
             feature_cols = _filter_feature_columns(all_feature_cols, selected_nodes)
         else:
-            feature_cols = classifier_cols  # По умолчанию без года
+            # По умолчанию: все тематические коды без года
+            feature_cols = classifier_cols
 
         # Чистим признаки
         for col in feature_cols:
             dataset[col] = pd.to_numeric(dataset[col], errors="coerce").fillna(0)
 
         if not feature_cols:
-            st.error("❌ Не выбраны признаки для сравнения (тематические узлы/год).")
+            st.error("❌ Не выбраны признаки для сравнения. Выберите узлы классификатора или 'Год'.")
             return
+
+        # Информация о выбранных признаках
+        with st.expander("ℹ️ Информация о выбранных признаках", expanded=False):
+            thematic = [c for c in feature_cols if c != "Year_num"]
+            has_year = "Year_num" in feature_cols
+
+            info_text = f"**Всего признаков для анализа:** {len(feature_cols)}\n\n"
+            if thematic:
+                info_text += f"**Тематические коды:** {len(thematic)}\n\n"
+                if len(thematic) <= 20:
+                    info_text += "Коды: " + ", ".join(thematic)
+                else:
+                    info_text += f"Коды: {', '.join(thematic[:20])}... (ещё {len(thematic) - 20})"
+            if has_year:
+                info_text += "\n\n**Временной фактор:** включён (Year_num)"
+
+            st.markdown(info_text)
 
         # Анализ
         with st.spinner("Расчёт метрик (силуэт, DB, CH)..."):
@@ -685,6 +721,7 @@ def render_articles_comparison_tab(
             return
 
         # Вывод результатов
+        st.markdown("---")
         st.subheader("📊 Результаты сравнительного анализа")
 
         m1, m2, m3 = st.columns(3)
@@ -694,11 +731,11 @@ def render_articles_comparison_tab(
         with m2:
             db = results.get("davies_bouldin")
             st.metric("Индекс Дэвиса–Боулдина", f"{db:.3f}" if isinstance(db, (float, int)) else "—")
-            st.caption("Меньшие значения обычно соответствуют более чёткому разделению.")
+            st.caption("Меньшие значения соответствуют более чёткому разделению.")
         with m3:
             ch = results.get("calinski_harabasz")
             st.metric("Индекс Калинского–Харабаза", f"{int(ch)}" if isinstance(ch, (float, int)) else "—")
-            st.caption("Большие значения обычно соответствуют более чёткому разделению.")
+            st.caption("Большие значения соответствуют более чёткому разделению.")
 
         st.markdown("### 📈 График силуэта")
         fig = create_articles_silhouette_plot(
@@ -717,7 +754,7 @@ def render_articles_comparison_tab(
         if isinstance(school_order, list) and len(school_order) == 2 and isinstance(centroids_dist, (float, int)):
             st.info(f"**Евклидово расстояние между центроидами школ:** {centroids_dist:.3f}")
         elif isinstance(school_order, list) and len(school_order) > 2 and centroids_dist is not None:
-            with st.expander("Матрица расстояний между центроидами", expanded=False):
+            with st.expander("📏 Матрица расстояний между центроидами", expanded=False):
                 dist_df = pd.DataFrame(centroids_dist, index=school_order, columns=school_order)
                 st.dataframe(dist_df, use_container_width=True)
 
