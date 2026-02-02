@@ -30,6 +30,9 @@ from school_comparison import (
     create_comparison_summary,
     interpret_silhouette_score,
     gather_school_dataset,
+    get_minimal_parent_nodes,
+    compute_node_distances,
+    create_node_distance_heatmap,
 )
 
 
