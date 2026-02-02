@@ -508,9 +508,9 @@ def get_minimal_parent_nodes(feature_columns: List[str]) -> List[str]:
         if parent and parent in all_codes:
             # Check if parent has any children
             children = [c for c in feature_columns if get_parent_code(c) == parent]
-            # Check if any children are leaves
+            # Check if any children are leaves (have no descendants)
             has_leaf_child = any(
-                not any(cc.startswith(c + ".") for cc in feature_columns)
+                not any(cc.startswith(c + ".") for cc in feature_columns if cc != c)
                 for c in children
             )
             if has_leaf_child:
@@ -567,11 +567,17 @@ def compute_node_distances(
                     if "euclidean" in metric:
                         dist = np.linalg.norm(v1 - v2)
                     else:  # cosine
-                        dist = 1 - np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-10)
+                        norm1 = np.linalg.norm(v1)
+                        norm2 = np.linalg.norm(v2)
+                        if norm1 > 1e-10 and norm2 > 1e-10:
+                            dist = 1 - np.dot(v1, v2) / (norm1 * norm2)
+                        else:
+                            dist = 0.0
                     
                     row_data[f"{school1} vs {school2}"] = dist
         
-        results.append(row_data)
+        if len(row_data) > 1:  # Has at least one comparison
+            results.append(row_data)
     
     return pd.DataFrame(results), minimal_parents
 
@@ -584,45 +590,78 @@ def create_node_distance_heatmap(
     """
     Creates a heatmap showing distances between schools for each minimal parent node.
     """
-    import seaborn as sns
+    try:
+        import seaborn as sns
+    except ImportError:
+        # Fallback to matplotlib if seaborn not available
+        sns = None
     
     # Prepare data
     nodes = distance_df["node"].tolist()
     comparison_cols = [c for c in distance_df.columns if " vs " in c]
     
+    if not comparison_cols or not nodes:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.text(0.5, 0.5, "No data to display", ha="center", va="center")
+        ax.axis("off")
+        return fig
+    
     matrix = distance_df[comparison_cols].values
     
     # Create labels with both code and description
-    node_labels = [
-        f"{node}\n{classifier_labels.get(node, '')[:30]}" 
-        for node in nodes
-    ]
+    node_labels = []
+    for node in nodes:
+        label_text = classifier_labels.get(node, "")
+        if label_text and len(label_text) > 40:
+            label_text = label_text[:37] + "..."
+        node_labels.append(f"{node} {label_text}" if label_text else node)
     
     # Create figure
-    fig, ax = plt.subplots(figsize=(max(10, len(comparison_cols) * 1.5), max(8, len(nodes) * 0.5)))
+    fig_height = max(8, len(nodes) * 0.6)
+    fig_width = max(10, len(comparison_cols) * 2)
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     
-    sns.heatmap(
-        matrix,
-        annot=True,
-        fmt=".3f",
-        cmap="YlOrRd",
-        yticklabels=node_labels,
-        xticklabels=comparison_cols,
-        cbar_kws={'label': 'Distance'},
-        ax=ax
-    )
+    if sns is not None:
+        sns.heatmap(
+            matrix,
+            annot=True,
+            fmt=".3f",
+            cmap="YlOrRd",
+            yticklabels=node_labels,
+            xticklabels=comparison_cols,
+            cbar_kws={'label': 'Distance'},
+            ax=ax,
+            linewidths=0.5,
+            linecolor='gray'
+        )
+    else:
+        # Fallback matplotlib implementation
+        im = ax.imshow(matrix, cmap="YlOrRd", aspect="auto")
+        ax.set_xticks(np.arange(len(comparison_cols)))
+        ax.set_yticks(np.arange(len(node_labels)))
+        ax.set_xticklabels(comparison_cols)
+        ax.set_yticklabels(node_labels)
+        
+        # Add colorbar
+        cbar = plt.colorbar(im, ax=ax)
+        cbar.set_label('Distance', rotation=270, labelpad=20)
+        
+        # Add annotations
+        for i in range(len(nodes)):
+            for j in range(len(comparison_cols)):
+                text = ax.text(j, i, f"{matrix[i, j]:.3f}",
+                             ha="center", va="center", color="black", fontsize=9)
     
     ax.set_title(
-        f"Distances between schools by thematic sectors\n{metric_label}",
+        f"Тематические различия между школами по разделам классификатора\n{metric_label}",
         fontsize=14,
         fontweight="bold",
         pad=20
     )
     
     plt.xticks(rotation=45, ha='right')
-    plt.yticks(rotation=0)
+    plt.yticks(rotation=0, fontsize=9)
     fig.tight_layout()
     
     return fig
-
 
