@@ -493,3 +493,136 @@ def interpret_silhouette_score(score: float) -> str:
         return "🟠 Слабое разделение: школы имеют схожие тематические профили"
     else:
         return "🔴 Плохое разделение: тематические профили перемешаны"
+
+
+def get_minimal_parent_nodes(feature_columns: List[str]) -> List[str]:
+    """
+    Returns nodes that are parents of leaf nodes (minimal parent nodes).
+    These are internal nodes with at least one child that has no children itself.
+    """
+    all_codes = set(feature_columns)
+    minimal_parents = set()
+    
+    for code in feature_columns:
+        parent = get_parent_code(code)
+        if parent and parent in all_codes:
+            # Check if parent has any children
+            children = [c for c in feature_columns if get_parent_code(c) == parent]
+            # Check if any children are leaves
+            has_leaf_child = any(
+                not any(cc.startswith(c + ".") for cc in feature_columns)
+                for c in children
+            )
+            if has_leaf_child:
+                minimal_parents.add(parent)
+    
+    return sorted(minimal_parents)
+
+
+def compute_node_distances(
+    datasets: Dict[str, pd.DataFrame],
+    feature_columns: List[str],
+    metric: DistanceMetric,
+    decay_factor: float = 0.5,
+) -> Tuple[pd.DataFrame, List[str]]:
+    """
+    Computes distances between schools for each minimal parent node.
+    
+    Returns:
+        - DataFrame with distances (rows=nodes, columns=school pairs)
+        - List of minimal parent nodes
+    """
+    minimal_parents = get_minimal_parent_nodes(feature_columns)
+    school_names = list(datasets.keys())
+    
+    results = []
+    
+    for node in minimal_parents:
+        # Get all descendant features
+        descendant_cols = [c for c in feature_columns if is_descendant_of(c, node)]
+        
+        if not descendant_cols:
+            continue
+        
+        # Compute mean vectors for each school under this node
+        school_vectors = {}
+        for school_name, dataset in datasets.items():
+            if dataset.empty:
+                continue
+            available = [c for c in descendant_cols if c in dataset.columns]
+            if available:
+                vector = dataset[available].fillna(0.0).mean(axis=0).values
+                school_vectors[school_name] = vector
+        
+        # Compute pairwise distances
+        row_data = {"node": node}
+        for i, school1 in enumerate(school_names):
+            for j, school2 in enumerate(school_names):
+                if j <= i:
+                    continue
+                if school1 in school_vectors and school2 in school_vectors:
+                    v1 = school_vectors[school1]
+                    v2 = school_vectors[school2]
+                    
+                    if "euclidean" in metric:
+                        dist = np.linalg.norm(v1 - v2)
+                    else:  # cosine
+                        dist = 1 - np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-10)
+                    
+                    row_data[f"{school1} vs {school2}"] = dist
+        
+        results.append(row_data)
+    
+    return pd.DataFrame(results), minimal_parents
+
+
+def create_node_distance_heatmap(
+    distance_df: pd.DataFrame,
+    classifier_labels: Dict[str, str],
+    metric_label: str,
+) -> plt.Figure:
+    """
+    Creates a heatmap showing distances between schools for each minimal parent node.
+    """
+    import seaborn as sns
+    
+    # Prepare data
+    nodes = distance_df["node"].tolist()
+    comparison_cols = [c for c in distance_df.columns if " vs " in c]
+    
+    matrix = distance_df[comparison_cols].values
+    
+    # Create labels with both code and description
+    node_labels = [
+        f"{node}\n{classifier_labels.get(node, '')[:30]}" 
+        for node in nodes
+    ]
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(max(10, len(comparison_cols) * 1.5), max(8, len(nodes) * 0.5)))
+    
+    sns.heatmap(
+        matrix,
+        annot=True,
+        fmt=".3f",
+        cmap="YlOrRd",
+        yticklabels=node_labels,
+        xticklabels=comparison_cols,
+        cbar_kws={'label': 'Distance'},
+        ax=ax
+    )
+    
+    ax.set_title(
+        f"Distances between schools by thematic sectors\n{metric_label}",
+        fontsize=14,
+        fontweight="bold",
+        pad=20
+    )
+    
+    plt.xticks(rotation=45, ha='right')
+    plt.yticks(rotation=0)
+    fig.tight_layout()
+    
+    return fig
+
+
