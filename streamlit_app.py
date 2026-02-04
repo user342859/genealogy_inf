@@ -38,7 +38,6 @@ from sklearn.metrics import silhouette_samples, silhouette_score
 from profiles_tab import render_profiles_tab
 from school_comparison_tab import render_school_comparison_tab
 #from school_comparison_new_tab import render_school_comparison_new_tab
-from articles_comparison_tab import render_articles_comparison_tab
 
 # ---------------------- Константы -----------------------------------------
 DATA_DIR = "db_lineages"      # папка с CSV внутри репозитория
@@ -1277,14 +1276,13 @@ shared_roots = st.query_params.get_all("root")
 valid_shared_roots = [r for r in shared_roots if r in all_supervisor_names]
 manual_prefill = "\n".join(r for r in shared_roots if r not in all_supervisor_names)
 
-tab_lineages, tab_dissertations, tab_profiles, tab_schoolcomparison, tab_articles_comparison = st.tabs(
+tab_lineages, tab_dissertations, tab_profiles, tab_schoolcomparison = st.tabs(
     [
         "Построение деревьев",
         "Поиск информации о диссертациях",
         "Поиск по тематическим профилям",
         "Сравнение научных школ",
         #Сравнение научных школ. Вариант 2"
-        "Сравнение по статьям"
         ]
 )
 
@@ -1679,28 +1677,3 @@ with tab_schoolcomparison:
         specific_files=None,                  # ← None = все CSV, или ["file1.csv", "file2.csv"]
         classifier_labels=classifier_labels,  # ← Опционально: названия узлов
     )
-
-with tab_articles_comparison:
-    # Используем словарь меток классификатора, который уже есть в приложении
-    classifier_labels_dict = {code: title for code, title, _ in THEMATIC_CLASSIFIER}
-    
-    render_articles_comparison_tab(
-        df_lineage=df,
-        idx_lineage=idx,
-        lineage_func=lineage,
-        selected_roots=roots
-    )
-    
-#with tab_schoolcomparison_new:
-#    # Словарь {код: название} из THEMATIC_CLASSIFIER
-#    classifier_labels = {code: title for code, title, _ in THEMATIC_CLASSIFIER}
-#    
-#    render_school_comparison_new_tab(
-#        df=df,
-#        idx=idx,
-#        lineage_func=lineage,
-#        rows_for_func=rows_for,
-#        scores_folder="basic_scores",        # ← Папка с профилями
-#        specific_files=None,                  # ← None = все CSV, или ["file1.csv", "file2.csv"]
-#        classifier_labels=classifier_labels,  # ← Опционально: названия узлов
-#    )
